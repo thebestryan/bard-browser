@@ -1,0 +1,164 @@
+import React from "react";
+import { uid, useStore } from "../store";
+import { Empty, PageHead } from "../components/UI";
+import Icon from "../components/Icon";
+
+/**
+ * User Files — clearly labeled storage categories so anyone transferring
+ * files knows exactly where to look. Uploaded files keep their ORIGINAL
+ * filename — never renamed, ever.
+ */
+export const FILE_CATEGORIES = [
+  { id: "backgrounds", label: "Backgrounds", icon: "image", hint: "Scene / world background images" },
+  { id: "characters", label: "Characters", icon: "masks", hint: "Imported character cards, avatars, sprites" },
+  { id: "personas", label: "Personas", icon: "user", hint: "Player persona images" },
+  { id: "virtualhumans", label: "Virtual Humans", icon: "users", hint: "Virtual human photos, voice notes" },
+  { id: "worlds", label: "Worlds", icon: "globe", hint: "Imported world files, maps" },
+  { id: "scenarios", label: "Scenarios", icon: "film", hint: "Scenario assets" },
+  { id: "presets", label: "Presets", icon: "sliders", hint: "Imported prompt / generation presets" },
+  { id: "lorebooks", label: "Lorebooks", icon: "book", hint: "Imported lorebooks / world info" },
+  { id: "exports", label: "Exports", icon: "save", hint: "Chats, transcripts, backups" },
+];
+
+// Base64 in a data URL costs ~4/3 of the file; keep a single upload sane.
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+const fmtSize = (n) =>
+  n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : n > 1e3 ? (n / 1e3).toFixed(0) + " KB" : n + " B";
+
+/** Chrome/Firefox refuse to navigate to a data: URL; a blob: URL works. */
+function openDataURL(dataURL) {
+  try {
+    const [meta, payload] = String(dataURL).split(",");
+    const mime = meta.match(/data:([^;]+)/)?.[1] || "application/octet-stream";
+    const bytes = /;base64/i.test(meta)
+      ? Uint8Array.from(atob(payload), (c) => c.charCodeAt(0))
+      : new TextEncoder().encode(decodeURIComponent(payload));
+    const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+    window.open(url, "_blank", "noopener");
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch {
+    window.open(dataURL, "_blank", "noopener");
+  }
+}
+
+export default function FilesView() {
+  const { state, add, remove } = useStore();
+  const [active, setActive] = React.useState("backgrounds");
+  const [error, setError] = React.useState("");
+  const inputRef = React.useRef(null);
+
+  const files = state.userFiles || [];
+  const cat = FILE_CATEGORIES.find((c) => c.id === active);
+  const shown = files.filter((f) => f.category === active);
+
+  const upload = (e) => {
+    const picked = Array.from(e.target.files || []);
+    setError("");
+    picked.forEach((file) => {
+      if (file.size > MAX_UPLOAD_BYTES) {
+        setError(`"${file.name}" is ${fmtSize(file.size)} — the limit is ${fmtSize(MAX_UPLOAD_BYTES)}.`);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onerror = () => setError(`Could not read "${file.name}".`);
+      reader.onload = () => {
+        add("userFiles", {
+          id: uid(),
+          category: active,
+          // ORIGINAL filename, untouched — never renamed by the app.
+          fileName: file.name,
+          fileType: file.type || "unknown",
+          size: file.size,
+          dataURL: reader.result,
+          createdAt: Date.now(),
+        });
+      };
+      reader.readAsDataURL(file);
+    });
+    e.target.value = "";
+  };
+
+
+
+  return (
+    <div>
+      <PageHead
+        title="User Files"
+        sub="Your files, organized in clearly labeled folders. Filenames are preserved exactly as uploaded — the app never renames them."
+      />
+
+      <div className="row wrap mb">
+        {FILE_CATEGORIES.map((c) => (
+          <button
+            key={c.id}
+            className={`btn sm ${c.id === active ? "primary" : "ghost"}`}
+            onClick={() => setActive(c.id)}
+          >
+            <Icon name={c.icon} size={12} /> {c.label}
+            <span className="faint" style={{ marginLeft: 4 }}>
+              {files.filter((f) => f.category === c.id).length}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {error && <div className="card mb" style={{ color: "var(--red)", fontSize: 12 }}>{error}</div>}
+
+      <div className="card mb">
+        <div className="row">
+          <div className="grow">
+            <h3 style={{ margin: 0 }}>
+              {cat.label}
+            </h3>
+            <div className="faint">{cat.hint}</div>
+          </div>
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            style={{ display: "none" }}
+            onChange={upload}
+          />
+          <button className="btn primary" onClick={() => inputRef.current?.click()}>
+            <Icon name="upload" size={13} /> Upload to {cat.label}
+          </button>
+        </div>
+      </div>
+
+      {shown.length === 0 ? (
+        <Empty icon="folder" title={`No files in ${cat.label} yet`}>
+          Upload files here — they keep their original names.
+        </Empty>
+      ) : (
+        <div className="grid cols-3">
+          {shown.map((f) => (
+            <div className="card hoverable" key={f.id}>
+              {f.fileType.startsWith("image/") && (
+                <img
+                  src={f.dataURL}
+                  alt={f.fileName}
+                  style={{ width: "100%", height: 120, objectFit: "cover", borderRadius: 8, marginBottom: 10 }}
+                />
+              )}
+              <div style={{ fontWeight: 600, wordBreak: "break-all" }}>{f.fileName}</div>
+              <div className="faint mb">{f.fileType} · {fmtSize(f.size)}</div>
+              <div className="row">
+                {f.fileType.startsWith("image/") && (
+                  // browsers block top-level data: navigation, so open a blob URL instead
+                  <button className="btn sm" onClick={() => openDataURL(f.dataURL)}>Open</button>
+                )}
+                <a className="btn sm" href={f.dataURL} download={f.fileName}>
+                  Download
+                </a>
+                <button className="btn sm danger" onClick={() => remove("userFiles", f.id)}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
