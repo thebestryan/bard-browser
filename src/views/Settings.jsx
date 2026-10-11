@@ -21,8 +21,9 @@ const BLANK = (type) => ({
 export default function Settings() {
   const { state, addProfile, patchProfile, removeProfile, setActiveProfile, activeProfile, reset, update, exportBackup, importBackup, cryptoError } = useStore();
   const [tab, setTab] = useState("text");
-  const [edit, setEdit] = useState(null); // profile being edited, or "new" object
+  const [edit, setEdit] = useState(null);
   const [testResult, setTestResult] = useState({});
+  const scale = state.ui?.textScale ?? 1;
   const [testImg, setTestImg] = useState(null);
   const [backupMsg, setBackupMsg] = useState("");
   const backupRef = React.useRef(null);
@@ -162,6 +163,35 @@ export default function Settings() {
           </div>
         </div>
       ))}
+
+      <h3 className="mt">Display</h3>
+      <div className="card mb">
+        <Field label={`Text size — ${(scale * 100).toFixed(0)}%${scale === 1 ? " (default)" : ""}`}>
+          <input
+            type="range" min="0.8" max="1.4" step="0.05"
+            value={scale}
+            style={{ accentColor: "var(--accent)" }}
+            onChange={(e) => update((s0) => ({ ui: { ...s0.ui, textScale: parseFloat(e.target.value) } }))}
+          />
+        </Field>
+        <div className="row" style={{ gap: 6 }}>
+          {[["Small", 0.85], ["Default", 1], ["Large", 1.15], ["Larger", 1.3]].map(([label2, v]) => (
+            <button key={label2} className={`btn sm ${Math.abs(scale - v) < 0.01 ? "primary" : "ghost"}`}
+              onClick={() => update((s0) => ({ ui: { ...s0.ui, textScale: v } }))}>
+              {label2}
+            </button>
+          ))}
+        </div>
+        <div className="card mt" style={{ padding: "12px 14px" }}>
+          <div style={{ fontWeight: 650 }}>Preview</div>
+          <div className="muted">The quick brown fox jumps over the lazy dog — every line of text in the app scales with this setting. Layout, buttons and images stay put; only the type grows or shrinks.</div>
+          <div className="faint" style={{ marginTop: 6 }}>MICRO LABELS AND TIMESTAMPS SCALE TOO</div>
+        </div>
+        <div className="faint mt" style={{ lineHeight: 1.45 }}>
+          Applied instantly across the whole app and saved. If text ever looks wrong after an
+          unusually large size, the Default button restores the original scale.
+        </div>
+      </div>
 
       <h3 className="mt">Card Browser</h3>
       <div className="card mb">

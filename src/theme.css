@@ -37,7 +37,10 @@
   --font-mono: "Roboto Mono", ui-monospace, monospace;
 
   --micro: 10px;   /* uppercase tracked labels */
+  --text-scale: 1;
 }
+
+html { font-size: calc(16px * var(--text-scale)); }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }

@@ -26,6 +26,7 @@ const seedState = {
   chats: [],
   userFiles: [], // organized by category, original filenames preserved (uploads are NEVER renamed)
   jailbreak: { enabled: false, text: "" },
+  ui: { textScale: 1 },
 };
 
 /** Migrate older state shapes: providers[] → text profiles, etc. */

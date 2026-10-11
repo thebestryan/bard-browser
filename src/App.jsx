@@ -69,6 +69,13 @@ function Shell() {
     }
   }), []);
 
+  /* Text scale — Settings → Display drives a rem-based type system. */
+  const { state } = useStore();
+  React.useEffect(() => {
+    const scale = state.ui?.textScale ?? 1;
+    document.documentElement.style.setProperty("--text-scale", String(scale));
+  }, [state.ui?.textScale]);
+
   const appLoaded = ready && splashPhase !== "wait";
   if (!appLoaded) {
     return (
