@@ -7,6 +7,7 @@ import { fromSTPreset, toSTPreset, downloadJSON } from "../lib/stio";
 import {
   DEFAULT_SECTIONS, ROLE_LABEL, ROLE_DESCRIPTION, ROLE_NONE, SECTION_ROLES,
   newSection, profilesUsingPreset, previewBlocks, assemblePrompt, unplacedRoles, normalizePreset,
+  uidLocal,
 } from "../lib/prompt";
 import Icon from "../components/Icon";
 
@@ -83,6 +84,120 @@ function LorebookEditor({ b, onClose }) {
   );
 }
 
+/** One compact row per section: grip, reorder, expand, name, role, actions. */
+function SectionRow({
+  s, i, last, open, preview, drag,
+  onToggleOpen, onMove, onPatch, onDuplicate, onRemove,
+}) {
+  const off = s.enabled === false;
+  const literal = String(s.content || "").trim() !== "";
+  const marker = !literal && s.role !== ROLE_NONE;
+  const roleLabel = literal ? "own text" : (ROLE_LABEL[s.role] || "custom").toLowerCase();
+
+  return (
+    <div
+      className={[
+        "pe-row", off ? "off" : "on",
+        drag.dragging ? "dragging" : "",
+        drag.over === "up" ? "over-up" : drag.over === "down" ? "over-down" : "",
+      ].filter(Boolean).join(" ")}
+      draggable={drag.armed}
+      onDragStart={drag.onDragStart}
+      onDragEnd={drag.onDragEnd}
+      onDragOver={drag.onDragOver}
+      onDrop={drag.onDrop}
+    >
+      <div className="pe-bar">
+        <span
+          className="pe-grip"
+          title="Drag to reorder"
+          onMouseDown={drag.arm}
+          onMouseUp={drag.disarm}
+        >
+          <Icon name="grip" size={14} />
+        </span>
+        <button className="pe-ico" title="Move up" disabled={i === 0} onClick={() => onMove(-1)}>
+          <Icon name="chevron" size={13} style={{ transform: "rotate(-90deg)" }} />
+        </button>
+        <button className="pe-ico" title="Move down" disabled={last} onClick={() => onMove(1)}>
+          <Icon name="chevron" size={13} style={{ transform: "rotate(90deg)" }} />
+        </button>
+        <button className="pe-ico" title={open ? "Collapse" : "Expand"} aria-expanded={open} onClick={onToggleOpen}>
+          <Icon name="chevron" size={13}
+            style={{ transition: "transform 140ms ease", transform: open ? "rotate(90deg)" : "none" }} />
+        </button>
+        <Icon name="sectionmark" size={15} className="pe-mark" />
+        <button className="pe-name" title={open ? "Collapse" : "Expand"} onClick={onToggleOpen}>
+          {s.name || "Untitled section"}
+        </button>
+        {marker && <span className="badge amber" title="Filled in by the app at send time">Marker</span>}
+        <span className="pe-role" title={literal ? "Sent exactly as written" : ROLE_DESCRIPTION[s.role] || ""}>
+          {roleLabel}
+        </span>
+        <button className="pe-ico" title="Duplicate section" onClick={onDuplicate}>
+          <Icon name="copy" size={14} />
+        </button>
+        <button
+          className={`pe-ico${off ? "" : " on"}`}
+          title={off ? "Switched off — not sent to the model" : "Switched on"}
+          aria-pressed={!off}
+          onClick={() => onPatch({ enabled: off })}
+        >
+          <Icon name={off ? "eyeOff" : "eye"} size={14} />
+        </button>
+        <button className="pe-ico danger" title="Remove section" onClick={onRemove}>
+          <Icon name="trash" size={14} />
+        </button>
+      </div>
+
+      {open && (
+        <div className="pe-edit">
+          <div className="row" style={{ alignItems: "flex-end" }}>
+            <div className="grow">
+              <label>Name</label>
+              <input value={s.name} placeholder="Section name" onChange={(e) => onPatch({ name: e.target.value })} />
+            </div>
+            <div style={{ width: 170 }}>
+              <label>Pulls from</label>
+              <select
+                value={s.role}
+                disabled={literal}
+                title={literal ? "This section sends its own text, so it has no role" : "What this section pulls from the app"}
+                onChange={(e) => onPatch({ role: e.target.value })}
+              >
+                {literal
+                  ? <option value={s.role}>Own text</option>
+                  : [ROLE_NONE, ...SECTION_ROLES].map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="faint" style={{ lineHeight: 1.5 }}>
+            {literal ? "Your own text, sent exactly as written." : ROLE_DESCRIPTION[s.role] || "Adds nothing on its own."}
+          </div>
+          {literal ? (
+            <textarea
+              rows={Math.min(14, Math.max(3, String(s.content).split("\n").length))}
+              value={s.content}
+              onChange={(e) => onPatch({ content: e.target.value })}
+            />
+          ) : (
+            <>
+              <pre className="pe-preview" style={{ textDecoration: off ? "line-through" : undefined }}>
+                {preview || "(nothing — this section adds no text)"}
+              </pre>
+              <div>
+                <button className="btn sm ghost" onClick={() => onPatch({ content: preview || " " })}>
+                  Replace with my own text
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * SillyTavern-style preset manager: a dropdown of presets at the top; the
  * selected preset's options populate below it, each toggleable, in the order
@@ -93,8 +208,23 @@ export function Presets() {
   const { state, add, patch, activeProfile, patchProfile, removeCascade, deletionImpact } = useStore();
   const fileRef = React.useRef(null);
   const [selectedId, setSelectedId] = useState(null);
-  const [showPreview, setShowPreview] = useState(true);
+  const [showPreview, setShowPreview] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(true);
+  const [showHelp, setShowHelp] = useState(false);
+  const [openSection, setOpenSection] = useState(null);
   const [importError, setImportError] = useState("");
+  const [dragFrom, setDragFrom] = useState(null);
+  const [dragOver, setDragOver] = useState(null);
+  // only the row whose grip is held becomes draggable — making every row
+  // draggable breaks text selection in the inputs an expanded row contains
+  const [armedIdx, setArmedIdx] = useState(null);
+
+  useEffect(() => {
+    if (armedIdx === null) return;
+    const clear = () => setArmedIdx(null);
+    window.addEventListener("mouseup", clear);
+    return () => window.removeEventListener("mouseup", clear);
+  }, [armedIdx]);
   const textProfile = activeProfile("text");
   const presets = state.presets || [];
 
@@ -107,8 +237,12 @@ export function Presets() {
   useEffect(() => {
     if (!selected) return;
     const sec = selected.sections || [];
-    if (sec.some((s, i) => s.order !== i)) patch("presets", selected.id, normalizePreset(selected));
+    // rows are keyed by section id, so a preset missing them has to be normalized
+    if (sec.some((s, i) => s.order !== i || !s.id)) patch("presets", selected.id, normalizePreset(selected));
   }, [selected?.id]);
+
+  // keyed by preset too, so switching presets closes whatever was expanded
+  const rowKey = (s, i) => `${selected?.id}:${s.id || i}`;
 
   const createBlank = () => {
     const p = normalizePreset({
@@ -177,24 +311,77 @@ export function Presets() {
   const inUse = textProfile?.presetId === selected?.id;
   const users = selected ? profilesUsingPreset(state, selected.id) : [];
   const sections = (selected?.sections || []).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const onCount = sections.filter((s) => s.enabled !== false).length;
 
   const writeSections = (list) =>
     setP({ sections: list.map((s, i) => ({ ...s, order: i })) });
   const move = (i, dir) => {
-    const next = [...sections];
     const j = i + dir;
-    if (j < 0 || j >= next.length) return;
+    if (j < 0 || j >= sections.length) return;
+    const next = [...sections];
     [next[i], next[j]] = [next[j], next[i]];
+    writeSections(next);
+  };
+  const reorder = (from, to) => {
+    if (from == null || from === to) return;
+    const next = [...sections];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
     writeSections(next);
   };
   const setSection = (i, patchObj) =>
     writeSections(sections.map((s, k) => (k === i ? { ...s, ...patchObj } : s)));
   const removeSection = (i) => writeSections(sections.filter((_, k) => k !== i));
-  const addSection = () => writeSections([...sections, newSection()]);
+  const duplicateSection = (i) => {
+    const copy = { ...sections[i], id: uidLocal(), name: `${sections[i].name || "Section"} copy` };
+    const next = [...sections];
+    next.splice(i + 1, 0, copy);
+    writeSections(next);
+    setOpenSection(rowKey(copy, i + 1));
+  };
+  const addSection = () => {
+    const s = { ...newSection(), id: uidLocal(), name: "New section" };
+    writeSections([...sections, s]);
+    setOpenSection(rowKey(s, sections.length));
+    setEditorOpen(true);
+  };
+
+  const endDrag = () => { setArmedIdx(null); setDragFrom(null); setDragOver(null); };
+  const dragFor = (i) => ({
+    armed: armedIdx === i,
+    dragging: dragFrom === i,
+    over: dragOver?.i === i ? dragOver.pos : null,
+    arm: () => setArmedIdx(i),
+    disarm: () => setArmedIdx(null),
+    onDragStart: (e) => {
+      if (armedIdx !== i) { e.preventDefault(); return; }
+      setDragFrom(i);
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(i));
+    },
+    onDragEnd: endDrag,
+    onDragOver: (e) => {
+      if (dragFrom === null || dragFrom === i) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const r = e.currentTarget.getBoundingClientRect();
+      const pos = e.clientY < r.top + r.height / 2 ? "up" : "down";
+      if (dragOver?.i !== i || dragOver?.pos !== pos) setDragOver({ i, pos });
+    },
+    onDrop: (e) => {
+      e.preventDefault();
+      if (dragFrom === null || dragFrom === i) return endDrag();
+      const pos = dragOver?.i === i ? dragOver.pos : "up";
+      let to = pos === "up" ? i : i + 1;
+      if (dragFrom < to) to -= 1;
+      reorder(dragFrom, to);
+      endDrag();
+    },
+  });
 
   return (
     <div>
-      <PageHead title="Presets" sub={`Pick a preset, toggle its sections, done — edits save live. A preset takes effect by being linked to a text connection profile (active: "${textProfile?.name || "none"}").`}>
+      <PageHead title="Presets" sub={`Pick a preset, switch its sections on or off, done — edits save as you type. A preset takes effect once a text connection profile links to it (active: "${textProfile?.name || "none"}").`}>
         <input ref={fileRef} type="file" multiple accept=".json" style={{ display: "none" }} onChange={doImport} />
         <button className="btn" onClick={() => fileRef.current?.click()}>
           <Icon name="upload" size={13} /> Import
@@ -245,7 +432,7 @@ export function Presets() {
         </div>
       </div>
 
-      <div className="card">
+      <div className="card mb">
         <Field label="Preset name">
           <input value={selected.name} onChange={(e) => setP({ name: e.target.value })} />
         </Field>
@@ -270,90 +457,95 @@ export function Presets() {
             onChange={(e) => setP({ style: e.target.value })} />
         </Field>
 
-        <label>Prompt sections — in the order the model reads them</label>
-        <div className="faint mb">
-          Toggle a section off to leave it out of the prompt entirely. What you see in the grey
-          boxes below is a <b>live preview</b>, resolved with your data — the stored preset text
-          keeps <code>{"{{macros}}"}</code> exactly as imported.
-        </div>
-        {sections.map((s, i) => {
-          const off = s.enabled === false;
-          const literal = String(s.content || "").trim() !== "";
-          return (
-            <div key={i} className="mb" style={{ opacity: off ? 0.55 : 1 }}>
-              <div className="row" style={{ gap: 6 }}>
-                <input type="checkbox" style={{ width: "auto" }} checked={!off}
-                  title={off ? "Excluded from the prompt" : "Included in the prompt"}
-                  onChange={(e) => setSection(i, { enabled: e.target.checked })} />
-                <input className="grow" value={s.name} placeholder="Section name"
-                  onChange={(e) => setSection(i, { name: e.target.value })} />
-                <select style={{ width: 150 }} value={s.role} disabled={literal}
-                  title={literal ? "This section sends its own text, so it has no role" : "What this section pulls from the app"}
-                  onChange={(e) => setSection(i, { role: e.target.value })}>
-                  {literal
-                    ? <option value={s.role}>Own text</option>
-                    : [ROLE_NONE, ...SECTION_ROLES].map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
-                </select>
-                <button className="btn sm" title="Move up" disabled={i === 0} onClick={() => move(i, -1)}>↑</button>
-                <button className="btn sm" title="Move down" disabled={i === sections.length - 1} onClick={() => move(i, 1)}>↓</button>
-                <button className="btn sm danger" title="Remove section" onClick={() => removeSection(i)}>×</button>
-              </div>
-              <div className="faint" style={{ margin: "2px 0 0 26px", lineHeight: 1.45 }}>
-                {literal
-                  ? "Your own text, sent exactly as written."
-                  : ROLE_DESCRIPTION[s.role] || "Custom section."}
-              </div>
-              {literal ? (
-                <textarea
-                  rows={Math.min(6, Math.max(2, String(s.content).split("\n").length))}
-                  value={s.content}
-                  style={{
-                    margin: "4px 0 0 26px", width: "calc(100% - 26px)", fontSize: "0.7188rem",
-                    fontFamily: "var(--font-mono)", lineHeight: 1.45,
-                  }}
-                  onChange={(e) => setSection(i, { content: e.target.value })}
-                />
-              ) : (
-                <pre style={{
-                  margin: "4px 0 0 26px", padding: "6px 8px", borderRadius: 6,
-                  background: "rgba(0,0,0,0.25)", whiteSpace: "pre-wrap",
-                  fontSize: "0.6875rem", lineHeight: 1.4, color: "var(--text-dim)",
-                  textDecoration: off ? "line-through" : undefined,
-                  maxHeight: 58, overflow: "auto",
-                }}>
-                  {pv[s.role] || "(nothing — this section adds no text)"}
-                </pre>
-              )}
-              {!literal && (
-                <button className="btn sm ghost" style={{ marginLeft: 26, marginTop: 4 }}
-                  onClick={() => setSection(i, { content: pv[s.role] || " " })}>
-                  Replace with my own text
-                </button>
-              )}
+      </div>
+
+      <div className="pe mb">
+        <button className="pe-head" aria-expanded={editorOpen} onClick={() => setEditorOpen((v) => !v)}>
+          <Icon name="layers" size={16} className="pe-head-icon" />
+          {editorOpen ? "Collapse preset editor" : "Expand preset editor"}
+          <span className="pe-count">
+            {sections.length} section{sections.length === 1 ? "" : "s"} · {onCount} on
+          </span>
+          <Icon name="chevron" size={14} className={`pe-caret${editorOpen ? " open" : ""}`} />
+        </button>
+
+        {editorOpen && (
+          <div className="pe-body">
+            <div className="pe-note">Edit sections here. Changes save as you type.</div>
+
+            <div className="pe-toolbar">
+              <button className="pe-ico" title="What are these sections?" aria-expanded={showHelp}
+                onClick={() => setShowHelp((v) => !v)}>
+                <Icon name="help" size={16} />
+              </button>
+              <button className="btn primary pill" onClick={addSection}>
+                <Icon name="plus" size={13} /> Add section
+              </button>
             </div>
-          );
-        })}
-        <button className="btn sm" onClick={addSection}>Add section</button>
 
-        {unplaced.length > 0 && (
-          <label style={{
-            display: "flex", alignItems: "flex-start", gap: 8, marginTop: 14,
-            textTransform: "none", letterSpacing: 0, fontSize: "0.75rem", cursor: "pointer",
-          }}>
-            <input type="checkbox" style={{ width: "auto", marginTop: 2 }}
-              checked={selected.appendUnplaced !== false}
-              onChange={(e) => setP({ appendUnplaced: e.target.checked })} />
-            <span>
-              <b>Also append what this preset doesn't place</b>
-              <div className="faint" style={{ lineHeight: 1.45 }}>
-                {unplaced.map((r) => ROLE_LABEL[r]).join(", ")} — added at the end.
-                Turn this off if your own text already covers them, or you'll say the same thing twice.
+            {showHelp && (
+              <div className="pe-note long">
+                Each row is one block of the system prompt. Switch a row off to leave it out
+                entirely. A <b>Marker</b> row is filled in by the app at send time — expand it to
+                see a live preview resolved with your own characters and worlds. Rows without the
+                badge send their stored text as written, keeping <code>{"{{macros}}"}</code> exactly
+                as imported.
               </div>
-            </span>
-          </label>
-        )}
+            )}
 
-        <div className="row mt">
+            {sections.length === 0 ? (
+              <div className="faint" style={{ padding: "16px 0" }}>
+                No sections yet. Add one to start building the prompt.
+              </div>
+            ) : (
+              <div className="pe-list">
+                {sections.map((s, i) => {
+                  const key = rowKey(s, i);
+                  return (
+                    <SectionRow
+                      key={key}
+                      s={s}
+                      i={i}
+                      last={i === sections.length - 1}
+                      open={openSection === key}
+                      preview={pv[s.role]}
+                      drag={dragFor(i)}
+                      onToggleOpen={() => setOpenSection((cur) => (cur === key ? null : key))}
+                      onMove={(dir) => move(i, dir)}
+                      onPatch={(p) => setSection(i, p)}
+                      onDuplicate={() => duplicateSection(i)}
+                      onRemove={() => removeSection(i)}
+                    />
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="pe-foot">Click a row to expand it · Sections are assembled top-to-bottom</div>
+
+            {unplaced.length > 0 && (
+              <label style={{
+                display: "flex", alignItems: "flex-start", gap: 8, marginTop: 14,
+                textTransform: "none", letterSpacing: 0, fontSize: "0.75rem", cursor: "pointer",
+              }}>
+                <input type="checkbox" style={{ width: "auto", marginTop: 2 }}
+                  checked={selected.appendUnplaced !== false}
+                  onChange={(e) => setP({ appendUnplaced: e.target.checked })} />
+                <span>
+                  <b>Also append what this preset doesn't place</b>
+                  <div className="faint" style={{ lineHeight: 1.45 }}>
+                    {unplaced.map((r) => ROLE_LABEL[r]).join(", ")} — added at the end.
+                    Turn this off if your own text already covers them, or you'll say the same thing twice.
+                  </div>
+                </span>
+              </label>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="row">
           <label style={{ margin: 0 }}>
             Assembled prompt preview — {"{{macros}}"} resolved against{" "}
             <b style={{ color: "var(--accent-2)" }}>
@@ -371,7 +563,7 @@ export function Presets() {
           </button>
         </div>
         {showPreview && (
-          <pre className="prompt-preview" style={{
+          <pre className="prompt-preview mt" style={{
             padding: 10, borderRadius: 8, background: "rgba(0,0,0,0.25)",
             whiteSpace: "pre-wrap", fontSize: "0.7188rem", lineHeight: 1.5,
             maxHeight: 240, overflowY: "auto", overflowX: "auto",

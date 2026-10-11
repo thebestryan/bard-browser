@@ -556,3 +556,117 @@ label { display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.06e
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ===== Preset editor =====
+   A long preset is 100+ sections, so the list is the page: one compact row
+   per section, expanded only on demand. Disabled sections stay in place but
+   lose their pill so the enabled run reads as a single column at a glance. */
+.pe {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+.pe-head {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 12px 14px;
+  background: var(--bg-panel-2);
+  border: 0; border-bottom: 1px solid var(--border);
+  color: var(--text); font: inherit; font-size: 13px; font-weight: 650;
+  text-align: left; cursor: pointer;
+}
+.pe-head:hover { color: var(--accent-bright); }
+.pe-head .pe-head-icon { color: var(--accent); flex-shrink: 0; }
+.pe-head .pe-count { font-weight: 400; color: var(--text-faint); font-size: 12px; }
+.pe-caret { margin-left: auto; color: var(--text-faint); transition: transform 140ms ease; }
+.pe-caret.open { transform: rotate(-90deg); }
+
+.pe-body { padding: 14px; }
+.pe-note { color: var(--text-faint); font-size: 12px; line-height: 1.55; margin-bottom: 12px; }
+.pe-note.long { border-left: 2px solid var(--border-strong); padding-left: 10px; }
+
+.pe-toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px; margin-bottom: 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.btn.pill { border-radius: 999px; padding: 8px 17px; }
+
+/* bare icon buttons that live inside a row */
+.pe-ico {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; flex-shrink: 0;
+  background: none; border: 1px solid transparent; border-radius: 6px;
+  color: var(--text-faint); cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.pe-ico:hover:not(:disabled) { background: var(--bg-input); color: var(--text); }
+.pe-ico:disabled { opacity: 0.25; cursor: default; }
+.pe-ico.on { color: var(--green); }
+.pe-ico.on:hover { color: var(--green); }
+.pe-ico.danger:hover:not(:disabled) { color: var(--red); }
+
+.pe-list {
+  display: flex; flex-direction: column; gap: 3px;
+  max-height: 62vh; overflow-y: auto; overflow-x: hidden;
+  padding-right: 4px;
+}
+
+.pe-row { border: 1px solid transparent; border-radius: var(--radius); }
+.pe-row.on { background: var(--bg-panel-2); border-color: var(--border); }
+.pe-row.on:hover { border-color: var(--border-strong); }
+.pe-row.off .pe-bar { opacity: 0.5; }
+.pe-row.off:hover .pe-bar { opacity: 0.85; }
+.pe-row.off .pe-name { color: var(--text-faint); font-weight: 500; }
+.pe-row.off .pe-mark { color: var(--text-faint); }
+.pe-row.dragging { opacity: 0.35; }
+.pe-row.over-up { box-shadow: inset 0 2px 0 var(--accent); }
+.pe-row.over-down { box-shadow: inset 0 -2px 0 var(--accent); }
+
+.pe-bar { display: flex; align-items: center; gap: 1px; padding: 4px 7px 4px 3px; }
+.pe-grip {
+  display: flex; align-items: center; flex-shrink: 0;
+  padding: 0 1px; color: var(--text-faint); opacity: 0.5; cursor: grab;
+}
+.pe-grip:active { cursor: grabbing; }
+.pe-mark { color: var(--accent); flex-shrink: 0; margin: 0 7px 0 3px; }
+.pe-name {
+  flex: 1; min-width: 0; text-align: left;
+  background: none; border: 0; padding: 0;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--text);
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pe-name:hover { color: var(--accent-bright); }
+.pe-role {
+  flex-shrink: 0; margin: 0 8px; font-size: 11px; color: var(--text-faint);
+  max-width: 104px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.pe-edit {
+  padding: 4px 10px 12px 36px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.pe-edit label { margin: 0 0 4px; }
+.pe-edit .pe-preview {
+  margin: 0; padding: 8px 10px; border-radius: var(--radius-sm);
+  background: var(--bg-input); border: 1px solid var(--border);
+  white-space: pre-wrap; font-family: var(--font-mono);
+  font-size: 11.5px; line-height: 1.5; color: var(--text-dim);
+  max-height: 140px; overflow: auto;
+}
+.pe-edit textarea { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; }
+
+.pe-foot {
+  padding-top: 11px; text-align: center;
+  color: var(--text-faint); font-size: 11px;
+}
+
+.pe-ico:focus-visible, .pe-name:focus-visible, .pe-head:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pe-caret, .pe .icon-svg { transition: none !important; }
+}

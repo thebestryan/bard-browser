@@ -413,7 +413,10 @@ test("emoji are stripped from generated data, and nothing else changes", () => {
 test("no emoji anywhere in the app's source or README", async () => {
   const fs = await import("node:fs");
   const path = await import("node:path");
-  const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
+  // .pathname keeps a leading slash, so on Windows it resolves to R:\R:\... —
+  // fileURLToPath is the portable way back to a real filesystem path
+  const { fileURLToPath } = await import("node:url");
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
   const files = [];
   const walk = (d) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {

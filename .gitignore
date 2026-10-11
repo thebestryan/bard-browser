@@ -27,3 +27,6 @@ dist-ssr
 # temp test scratch
 *.tmp.mjs
 pd.tmp.mjs.old
+
+# local agent tooling config
+.claude/
