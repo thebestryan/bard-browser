@@ -51,6 +51,15 @@ const P = {
   heart: <path d="M12 20.5S4 15 4 9.5A4.5 4.5 0 0 1 12 6a4.5 4.5 0 0 1 8 3.5c0 5.5-8 11-8 11Z" />,
   key: <><circle cx="8" cy="15" r="4.5" /><path d="m11.5 11.5 8-8M17 6l2.5 2.5M14.5 8.5 17 11" /></>,
   waveform: <path d="M4 12h2l2-6 3 12 3-9 2 3h4" />,
+  // two columns of three dots — a drag handle
+  grip: <path d="M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01" strokeWidth="2.6" />,
+  eye: <><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /></>,
+  eyeOff: <><path d="M10.6 5.2A10 10 0 0 1 12 5c6.4 0 10 7 10 7a18.8 18.8 0 0 1-3.2 4.1M6.6 6.6A18.5 18.5 0 0 0 2 12s3.6 7 10 7a9.8 9.8 0 0 0 4.3-1M9.9 9.9a3 3 0 0 0 4.2 4.2" /><path d="m3 3 18 18" /></>,
+  copy: <><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" /></>,
+  layers: <><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 12.6 9 5 9-5M3 16.9l9 5 9-5" /></>,
+  help: <><circle cx="12" cy="12" r="9" /><path d="M9.6 9.4a2.5 2.5 0 0 1 4.9.6c0 1.7-2.5 2.4-2.5 2.4M12 17h.01" /></>,
+  // a prompt section: two stacked nodes feeding the prompt
+  sectionmark: <><circle cx="5.5" cy="7" r="2" /><circle cx="5.5" cy="17" r="2" /><path d="M9 7h10M9 17h10" /></>,
 };
 
 export default function Icon({ name, size = 16, strokeWidth = 1.7, className = "", style, ...rest }) {
