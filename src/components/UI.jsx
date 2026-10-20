@@ -189,10 +189,10 @@ export function QuitButton() {
 
 export function PageHead({ title, sub, children }) {
   return (
-    <div className="row mb" style={{ alignItems: "flex-start" }}>
+    <div className="row mb page-head" style={{ alignItems: "flex-start" }}>
       <div className="grow">
-        <h2 style={{ fontSize: 18, margin: 0 }}>{title}</h2>
-        <div className="faint">{sub}</div>
+        <h2>{title}</h2>
+        <div className="faint page-sub">{sub}</div>
       </div>
       <div className="row">{children}</div>
     </div>

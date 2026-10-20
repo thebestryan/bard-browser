@@ -21,11 +21,10 @@ export default function Home({ go, onNewStory }) {
     <div>
       <div className="card mb" style={{ borderLeft: "2px solid var(--accent)", padding: "26px 28px" }}>
         <h2 style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 400, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>
-          Your story. Your choices. In motion.
+          What reality will you command today?
         </h2>
         <div className="muted" style={{ maxWidth: 640 }}>
-          Build characters, shape worlds, and simulate lives. Every creative tool can generate with AI from a one-line
-          suggestion — and every AI feature can use any OpenAI-compatible API you choose, local or cloud.
+          Design the players. Establish the stakes. Control the narrative. Generate complex lore and deep scenarios from a single line.
         </div>
       </div>
       <div className="grid cols-3">

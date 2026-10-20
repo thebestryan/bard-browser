@@ -78,7 +78,7 @@ alongside every creator.
   The choice is stored on the card and sent to the model as an explicit pronoun line. Cards that
   already carry an explicit `gender`/`sex` field keep it; nothing is guessed from names or art.
 - **Character-card layout** — portrait on top with the name over it; without an image you get a
-  serif-initials fallback.
+  display-initials fallback.
 - **Reference photos** — load a model sheet (face, body, side views) on any card. AI portraits
   become reference-guided: renders go through the OpenAI-compatible multipart `/images/edits`
   endpoint with your references, keeping the same identity across renders. Providers without
