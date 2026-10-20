@@ -4,6 +4,7 @@ import { callChat, textParams } from "../lib/ai";
 import { integrateMemories, recallMemories } from "../lib/memory";
 import { activePreset, assemblePrompt, extractOOC, insertAtDepth, substituteMacros } from "../lib/prompt";
 import { mechanicsPromptBlock } from "../lib/mechanics";
+import { genderPromptLine, generationDirectives } from "../lib/presets";
 import MemoryInspector from "../components/MemoryInspector";
 import MechanicsPanel from "../components/MechanicsPanel";
 import { Avatar } from "../components/UI";
@@ -122,15 +123,18 @@ export default function WorldPlay({ worldId, exit }) {
         memory: (world.memories || []).length
           ? `Durable memories (canon):\n${recallMemories(world.memories, text).map((m) => `- ${m.text}`).join("\n")}`
           : "",
-        persona: `PLAYER: ${persona?.name || "the player"} — ${persona?.description || "an adventurer"}.`,
+        persona: `PLAYER: ${persona?.name || "the player"} — ${persona?.description || "an adventurer"}.${persona?.gender ? ` ${genderPromptLine(persona.gender)}` : ""}`,
         instructions: params.style ? `Style: ${params.style}` : "",
       };
-      const ctx = assemblePrompt(blocks, activePreset(state, provider), {
-        char: "the narrator",
-        user: persona?.name || "the player",
-        persona: persona?.description || "",
-        scenario: world.name || "",
-      });
+      const ctx = [
+        assemblePrompt(blocks, activePreset(state, provider), {
+          char: "the narrator",
+          user: persona?.name || "the player",
+          persona: persona?.description || "",
+          scenario: world.name || "",
+        }),
+        generationDirectives(state),
+      ].filter(Boolean).join("\n\n");
       // [[OOC]] side-channel + macros on the player's words
       const { clean, ooc } = extractOOC(text);
       const macroOpts = {

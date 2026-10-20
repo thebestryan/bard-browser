@@ -5,6 +5,7 @@ import { generateImage, generatedFileEntry } from "../lib/ai";
 import { runDetached } from "../lib/genbus";
 import { readImageFile } from "../lib/image";
 import { uid } from "../lib/id";
+import { GENDERS } from "../lib/presets";
 
 export function Modal({ title, children, onClose, wide }) {
   return (
@@ -21,6 +22,29 @@ export function Modal({ title, children, onClose, wide }) {
         {children}
       </div>
     </div>
+  );
+}
+
+/**
+ * Required gender choice. Nothing is inferred from a name or description —
+ * the user picks how the character should be referred to.
+ */
+export function GenderAsk({ name, onPick, onCancel }) {
+  return (
+    <Modal title="Choose gender" onClose={onCancel || (() => {})}>
+      <div className="muted mb">
+        {name ? <>How should <b>{name}</b> be referred to?</> : "How should this character be referred to?"}{" "}
+        Nothing is assumed — pick one.
+      </div>
+      <div className="row wrap" style={{ gap: 8 }}>
+        {GENDERS.map((g) => (
+          <button key={g.value} className="btn primary" onClick={() => onPick(g.value)}>{g.label}</button>
+        ))}
+      </div>
+      <div className="faint mt" style={{ lineHeight: 1.45 }}>
+        This is stored on the card and passed to the model as an explicit pronoun line.
+      </div>
+    </Modal>
   );
 }
 

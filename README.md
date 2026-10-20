@@ -73,6 +73,10 @@ alongside every creator.
 ### Characters, personas, virtual humans
 
 - Full character cards: appearance, personality, scenario, greeting, example dialogue.
+- **Gender is required, never inferred** — creating, importing, card-browsing or AI-generating a
+  character or persona asks for **He/him**, **She/her** or **They/them** before it can be saved.
+  The choice is stored on the card and sent to the model as an explicit pronoun line. Cards that
+  already carry an explicit `gender`/`sex` field keep it; nothing is guessed from names or art.
 - **Character-card layout** — portrait on top with the name over it; without an image you get a
   serif-initials fallback.
 - **Reference photos** — load a model sheet (face, body, side views) on any card. AI portraits
@@ -90,7 +94,12 @@ alongside every creator.
   world + scenario, with a "Reply as" switcher mid-scene.
 - Lorebook injection, world context, memory recall, mechanics state — assembled by your preset.
 - Streaming replies (SSE for real providers), rerolls that reuse the **full** scene context,
-  response swipes, message editing, and a **Stop** button that keeps whatever streamed in.
+  response swipes, and a **Stop** button that keeps whatever streamed in.
+- **Edit any past message** — save it in place, or **Save & Branch** to discard everything after
+  it and continue from there (branching from a user message immediately generates a new reply).
+  A standalone Branch action does the same without editing.
+- **Collapsible thinking** — model reasoning / chain-of-thought is stripped from the visible
+  reply and kept behind a **Show thinking** toggle on each assistant message.
 - **`[[OOC]]`** — anything in double brackets is split out of your message and delivered to the
   model as a side-channel instruction, never as story text.
 
@@ -108,24 +117,37 @@ Every chat has an **A/N** button: a standing system instruction injected into ev
 reroll at a depth you choose (0–10 messages from the end). World play has its own note in the
 HUD, and virtual humans have one in the chat header. Macros supported.
 
-### Agents & Trackers
+### Three-phase generation pipeline
 
-Marinara-style toggleable per-chat add-ons, running automatically after each reply:
+Every reply runs through a fixed pipeline instead of letting the model invent bookkeeping:
 
-| Agent | What it does |
-|---|---|
-| World State Tracker | Extracts durable facts (location, time, promises, injuries) |
-| Character Tracker | Who's present, their status and relation to you |
-| Quest Tracker | Detects quests and progress from the story |
-| Inventory Tracker | Items gained / lost |
-| Long-Term Memory | Summarizes older messages into compact memories |
-| Lorebook Keeper | Harvests lore with trigger keywords into a "Story Lore" lorebook |
-| CYOA Choices | Clickable action chips after each reply |
-| Expression Engine | Emotion badge on the character's replies |
-| Combat Tracker | Rounds, HP bars, fallen combatants |
+| Phase | What runs | Where it lands |
+|---|---|---|
+| **Pre-gen** | Routing agents select relevant lore, parse world-state changes (location, time, weather, facts, NPC notes) and roll checks (d20 + modifier vs DC) | Structured JSON on the chat (`agentState.world`, `lastRoll`) **before** the model runs |
+| **Generation** | The main model gets a lean prompt: character/persona, active tone preset, selected lore/memories, and cleanly injected state blocks | — |
+| **Post-gen** | Extraction agents update inventory, NPC status, quests, facts and durable memories; visual agents decide on illustrations and backgrounds | Structured JSON on the chat + images in User Files |
 
-Tracked state is injected into the system prompt (facts, memory, emotion) so it influences
-generation. Everything is visible and toggleable in the Agents drawer inside any chat.
+**Deterministic state over LLM state** — agent output is structured JSON saved to the app state
+and rendered into the prompt from that state. Free-text agent chatter is never appended back to
+history, and dice/checks are computed by the app, not the model.
+
+**Agent presets** (Presets page, each independently switchable):
+
+| Agent | Phase | What it does |
+|---|---|---|
+| RPG Stat & Inventory Tracker | Post | Inventory, equipment and stat changes |
+| World State & Timekeeper | Pre | Location, time, weather, durable facts |
+| Memory / Chat Summarizer & Lore Injector | Pre + post | Summarizes turns; injects relevant lore |
+| Lore & Character Card Updater | Post | Harvests names/places/facts into lorebooks |
+| NPC Mind / Subconscious | Post | What NPCs know, want, hide and feel |
+| Die Roll Combat Adjudication | Pre + post | Checks, rounds, HP, fallen combatants |
+| Anti-Repetition & Prose Linting | Post | Flags repetition and drifting voice |
+| Illustrator | Post | Decides when to illustrate and writes the image prompt |
+| Background | Pre + post | Reuses a scene asset or has the illustrator make one |
+| Custom Agent | Pre + post | Your own background instructions |
+
+The per-chat **Agents drawer** still exposes the underlying trackers, and the chat HUD shows the
+live structured state (world state, combat, memory) those agents maintain.
 
 ### Persistent Story Memory
 
@@ -159,18 +181,29 @@ equipment changes derived values live, and victory grants XP with level-ups. Ope
 
 ### Presets
 
-Prompt section ordering + sampler parameters, with a full manual editor: rename, retune
-temperature / max tokens / top P, edit style instructions, and reorder, rename, disable, add or
-remove prompt sections — each with a one-line description, a live content preview, and an
-**Assembled prompt preview** showing the finished prompt in order.
+Presets are split into two live-editing layers:
 
-- A preset takes effect by being linked to a text connection profile; the Presets view shows
-  which preset is in use and which profiles link each one.
-- **Imported presets are authoritative** — a preset with its own prompt text is used as written;
-  the app does not stack its generated blocks on top. A checkbox lists exactly what the preset
-  doesn't place and lets you append it anyway. The character's identity line is always
-  guaranteed — if nothing in the preset mentions the character, it is added regardless.
-- Applies to both character chats and world play narration.
+**Agent presets** — the ten background agents listed above. Toggle any of them on or off; each is
+tagged with the pipeline phase it runs in. The Custom Agent carries a free-text instruction box.
+
+**Generation presets** — injected into the base system prompt so they shape sampling from the
+first token, not as a post-rewrite:
+
+- **Narrative Style & Author Directives** — Balanced, Grimdark, Pulp Fantasy, Second-Person
+  "You", Cinematic Sensory Detail, Literary / Slow Burn, Fast & Punchy, or Custom.
+- **Dialogue Formatting Constraints** — Classic roleplay, Novel prose, Script, Minimal, or Custom.
+- **Safety / Content Boundaries** — independent explicit-content and violence levels (1–5) with
+  hard limits that always apply.
+- **Custom Instructions** — standing house rules, a jailbreak, or a tone note.
+
+A live **directive block** preview shows exactly what is appended. Both chat and world play
+generation receive the same directives, plus the deterministic state blocks from the pipeline.
+
+The **Advanced** section keeps the SillyTavern-format prompt-section editor: rename, retune
+temperature / max tokens / top P, edit style instructions, reorder/rename/disable/add/remove
+sections, and see the assembled prompt. Imported presets remain authoritative — their own text is
+used as written, with an optional append for sections they don't place. A linked preset still
+takes effect through the text connection profile it is attached to.
 
 ### Connections (profiles)
 
@@ -182,6 +215,13 @@ OpenAI-compatible: OpenRouter, OpenAI, NanoGPT, Mistral, Together, local Ollama
 vLLM… Text profiles carry sampler settings and an optional linked preset. **Leave a sampler box
 empty to inherit it from the linked preset; type a value to override the preset.** Offline Mock
 profiles for all three types ship enabled so everything works before you connect anything.
+
+### Display
+
+Settings → Display → **Text size** (80–140%, with Small / Default / Large / Larger shortcuts).
+The scale is applied instantly across the whole app through a rem-based type system: text grows
+or shrinks while layout, buttons and images keep their size. The setting is saved with the rest
+of your state.
 
 ### Jailbreak
 
@@ -231,6 +271,11 @@ worlds, scenarios and chats carry a cover image, with a styled fallback when the
 or generated. Uploads are downscaled for display so large photos don't slow saving; the
 untouched original goes to User Files under its original filename.
 
+The **Illustrator** agent attaches a generated scene image directly beneath the reply that
+inspired it (saved to User Files → Illustrations), and the **Background** agent maintains a
+subtle scene backdrop behind the chat log, reusing a world/chat asset or generating one when the
+Illustrator is enabled.
+
 ### Splash
 
 The app boots into a 1-second loading screen, plays `public/Splash.mp4` once (click anywhere to
@@ -243,9 +288,9 @@ emoji stripped, and a test fails if one is ever added to the source.
 
 ## User Files policy
 
-Uploads are stored in clearly labeled categories (Backgrounds, Characters, Personas, Virtual
-Humans, Worlds, Scenarios, Presets, Lorebooks, Exports) under **User Files** so anyone
-transferring files knows exactly where to look.
+Uploads are stored in clearly labeled categories (Backgrounds, Illustrations, Characters,
+Personas, Virtual Humans, Worlds, Scenarios, Presets, Lorebooks, Exports) under **User Files** so
+anyone transferring files knows exactly where to look.
 
 **Uploaded files are never renamed.** The original filename is preserved exactly as uploaded,
 shown in the UI, and used for downloads/exports.
@@ -289,7 +334,10 @@ src/
 ├── lib/
 │   ├── ai.js                      # AI service layer: mock OR OpenAI-compatible
 │   ├── prompt.js                  # preset assembly, macros, [[OOC]], depth
-│   ├── agents.js                  # agents & trackers engine
+│   ├── presets.js                 # preset catalog + tone/format/boundary directives
+│   ├── pipeline.js                # pre-gen routing, deterministic state blocks
+│   ├── visual.js                  # Illustrator/Background art-direction decisions
+│   ├── agents.js                  # post-gen agents & trackers engine
 │   ├── mechanics.js               # RPG rules engine
 │   ├── memory.js                  # durable memory + superseding + recall
 │   ├── vh.js                      # virtual human simulation
@@ -308,7 +356,7 @@ src/
     ├── Characters.jsx             # character cards + Card Browser
     ├── Sims.jsx                   # Personas, Scenarios, Virtual Humans + VH chat
     ├── Chats.jsx                  # chat rooms, Story Composer, agents, A/N
-    ├── LorePresets.jsx            # Lorebooks, Presets
+    ├── LorePresets.jsx            # Lorebooks + agent/generation preset control panel
     ├── Files.jsx                  # User Files
     └── Settings.jsx               # connections, card sources, jailbreak, data
 ```

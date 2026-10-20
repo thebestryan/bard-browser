@@ -1,8 +1,9 @@
 import React, { useState } from "react";
 import { uid, useStore } from "../store";
-import { AICreator, Avatar, DeleteButton, Empty, Field, ImagePicker, Modal, PageHead, ProfileCard, RefPhotos } from "../components/UI";
+import { AICreator, Avatar, DeleteButton, Empty, Field, GenderAsk, ImagePicker, Modal, PageHead, ProfileCard, RefPhotos } from "../components/UI";
 import { impactSummary } from "../lib/cascade";
 import { generateCharacter } from "../lib/ai";
+import { GENDERS } from "../lib/presets";
 import { importCharacterFile, exportPngCard, toSTCard, downloadJSON, downloadBlob } from "../lib/stio";
 import CardBrowser from "../components/CardBrowser";
 import Icon from "../components/Icon";
@@ -11,18 +12,29 @@ export default function Characters({ startChat }) {
   const { state, add, activeProfile, removeCascade, deletionImpact } = useStore();
   const [edit, setEdit] = useState(null);
   const [browseOpen, setBrowseOpen] = useState(false);
+  const [pending, setPending] = useState([]); // imported/generated cards awaiting a gender
   const fileRef = React.useRef(null);
 
+  const resolveGender = (gender) => {
+    const [item, ...rest] = pending;
+    if (!item) return;
+    add("characters", { ...item, gender });
+    setPending(rest);
+  };
+
   const doImport = async (e) => {
+    const needGender = [];
     for (const f of e.target.files || []) {
       try {
         const c = await importCharacterFile(f);
-        add("characters", c);
+        if (c.gender) add("characters", c);
+        else needGender.push(c);
       } catch (err) {
         alert(`Could not import "${f.name}": ${err.message || err}`);
       }
     }
     e.target.value = "";
+    if (needGender.length) setPending(needGender);
   };
 
   return (
@@ -52,7 +64,8 @@ export default function Characters({ startChat }) {
         ]}
         onGenerate={async (idea, opts) => {
           const c = await generateCharacter(activeProfile("text"), idea, opts);
-          add("characters", c);
+          if (c.gender) add("characters", c);
+          else setPending([c]);
         }}
       />
 
@@ -103,6 +116,13 @@ export default function Characters({ startChat }) {
       )}
 
       {edit && <CharEditor c={edit === "manual" ? null : edit} onClose={() => setEdit(null)} />}
+      {pending.length > 0 && (
+        <GenderAsk
+          name={pending[0].name}
+          onPick={resolveGender}
+          onCancel={() => setPending([])}
+        />
+      )}
     </div>
   );
 }
@@ -112,7 +132,7 @@ function CharEditor({ c, onClose }) {
   // lazy initializer: don't mint an id/timestamp on every render
   const [ch, setCh] = useState(() => c || {
     id: uid(), name: "", tags: [], appearance: "", personality: "",
-    scenario: "", greeting: "", examples: [], createdAt: Date.now(),
+    scenario: "", greeting: "", examples: [], gender: "", createdAt: Date.now(),
   });
   const set = (k, v) => setCh((x) => ({ ...x, [k]: v }));
   const save = () => {
@@ -140,6 +160,12 @@ function CharEditor({ c, onClose }) {
           <Field label="Name"><input value={ch.name} onChange={(e) => set("name", e.target.value)} /></Field>
         </div>
       </div>
+      <Field label="Gender (required)">
+        <select value={ch.gender || ""} onChange={(e) => set("gender", e.target.value)}>
+          <option value="" disabled>Choose…</option>
+          {GENDERS.map((g) => <option key={g.value} value={g.value}>{g.label}</option>)}
+        </select>
+      </Field>
       <Field label="Tags (comma separated)"><input value={(ch.tags || []).join(", ")} onChange={(e) => set("tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} /></Field>
       <Field label="Appearance"><textarea value={ch.appearance} onChange={(e) => set("appearance", e.target.value)} /></Field>
       <Field label="Personality"><textarea value={ch.personality} onChange={(e) => set("personality", e.target.value)} /></Field>
@@ -151,7 +177,7 @@ function CharEditor({ c, onClose }) {
       <div className="row mt">
         <div className="spacer" />
         <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn primary" onClick={save} disabled={!ch.name.trim()}>Save</button>
+        <button className="btn primary" onClick={save} disabled={!ch.name.trim() || !ch.gender}>Save</button>
       </div>
     </Modal>
   );

@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { uid, useStore } from "../store";
-import { AICreator, Avatar, CoverImage, DeleteButton, Empty, Field, ImagePicker, Modal, PageHead, ProfileCard, RefPhotos } from "../components/UI";
+import { AICreator, Avatar, CoverImage, DeleteButton, Empty, Field, GenderAsk, ImagePicker, Modal, PageHead, ProfileCard, RefPhotos } from "../components/UI";
 import { generatePersona, generateScenario, generateVirtualHuman } from "../lib/ai";
+import { GENDERS } from "../lib/presets";
 import {
   ensureVH,
   activeTimeline,
@@ -22,6 +23,7 @@ import Icon from "../components/Icon";
 export function Personas() {
   const { state, add, remove, activeProfile } = useStore();
   const [edit, setEdit] = useState(null);
+  const [pending, setPending] = useState(null);
 
   return (
     <div>
@@ -32,7 +34,8 @@ export function Personas() {
         chips={["Retired pirate turned baker", "Detective with insomnia", "Ordinary student, extraordinary luck"]}
         onGenerate={async (idea) => {
           const p = await generatePersona(activeProfile("text"), idea);
-          add("personas", p);
+          if (p.gender) add("personas", p);
+          else setPending(p);
         }}
       />
       {state.personas.length === 0 ? (
@@ -58,6 +61,13 @@ export function Personas() {
         </div>
       )}
       {edit && <PersonaEditor p={edit} onClose={() => setEdit(null)} />}
+      {pending && (
+        <GenderAsk
+          name={pending.name}
+          onPick={(gender) => { add("personas", { ...pending, gender }); setPending(null); }}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </div>
   );
 }
@@ -84,6 +94,12 @@ function PersonaEditor({ p, onClose }) {
         </div>
         <div className="who"><Field label="Name"><input value={x.name} onChange={(e) => set("name", e.target.value)} /></Field></div>
       </div>
+      <Field label="Gender (required)">
+        <select value={x.gender || ""} onChange={(e) => set("gender", e.target.value)}>
+          <option value="" disabled>Choose…</option>
+          {GENDERS.map((g) => <option key={g.value} value={g.value}>{g.label}</option>)}
+        </select>
+      </Field>
       <Field label="Description"><textarea rows={4} value={x.description} onChange={(e) => set("description", e.target.value)} /></Field>
       <Field label="Traits (comma separated)"><input value={(x.traits || []).join(", ")} onChange={(e) => set("traits", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} /></Field>
       <Field label="Voice / speech style"><input value={x.voice || ""} onChange={(e) => set("voice", e.target.value)} /></Field>
@@ -91,7 +107,7 @@ function PersonaEditor({ p, onClose }) {
       <RefPhotos refs={x.refs || []} category="personas" onChange={(refs) => set("refs", refs)} />
       <div className="row mt">
         <div className="spacer" />
-        <button className="btn primary" onClick={() => { patch("personas", p.id, x); onClose(); }}>Save</button>
+        <button className="btn primary" disabled={!x.gender} onClick={() => { patch("personas", p.id, x); onClose(); }}>Save</button>
       </div>
     </Modal>
   );

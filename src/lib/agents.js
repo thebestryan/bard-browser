@@ -22,6 +22,9 @@ export const AGENTS = [
 export function initialAgentState() {
   return {
     enabled: {},
+    // deterministic world state (pre-gen writes here before the model runs)
+    world: null,
+    lastRoll: null,
     facts: [],
     npcStatus: [],
     memory: [],
@@ -51,7 +54,7 @@ function naiveFacts(text) {
 const MOCK_EMOTIONS = ["amused", "wary", "curious", "troubled", "determined", "fond"];
 
 /** Run all enabled tracker agents over the latest exchange. Returns partial agent state. */
-export async function runTrackerAgents({ profile, messages, character, agentState, world }) {
+export async function runTrackerAgents({ profile, messages, character, agentState, world, extraInstructions = "" }) {
   const out = { facts: [], npcStatus: [], quests: [], inventoryAdds: [], inventoryRemoves: [], memoryAdd: null, emotion: null, combat: null };
   const recent = messages.slice(-6);
 
@@ -107,7 +110,8 @@ export async function runTrackerAgents({ profile, messages, character, agentStat
   const data = await callJSON(
     profile,
     `You are a story state tracker. Analyze the transcript and report changes only. Return JSON: {"facts":[string],"npcStatus":[{"name":"","status":"","relation":""}],"quests":[{"title":"","status":"open|active|done|failed"}],"inventoryAdds":[string],"inventoryRemoves":[string],"memoryAdd":string|null,"emotion":string|null,"combat":{"round":number,"combatants":[{"name":"","hp":number,"side":"ally|enemy"}]}|{"ended":true}|null}`,
-    `Character: ${character.name}. ${world ? `World: ${world.name}.` : ""}\nKnown state: ${JSON.stringify({ facts: agentState.facts.slice(-10), npcStatus: agentState.npcStatus, quests: agentState.quests, inventory: agentState.inventory, combat: agentState.combat })}\nTranscript:\n${transcript}`
+    `Character: ${character.name}. ${world ? `World: ${world.name}.` : ""}\nKnown state: ${JSON.stringify({ facts: agentState.facts.slice(-10), npcStatus: agentState.npcStatus, quests: agentState.quests, inventory: agentState.inventory, combat: agentState.combat })}\nTranscript:\n${transcript}` +
+    (extraInstructions ? `\nAdditional agent instructions:\n${extraInstructions}` : "")
   );
   return {
     facts: (Array.isArray(data.facts) ? data.facts : []).slice(0, 5),

@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { uid, useStore } from "../store";
 import Icon from "./Icon";
-import { Modal } from "./UI";
+import { GenderAsk, Modal } from "./UI";
 import { SOURCES, getSource } from "../lib/cardbrowser";
 import { importCharacterFile } from "../lib/stio";
 
@@ -19,6 +19,7 @@ export default function CardBrowser({ onClose, onImported }) {
   const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(null);
   const [error, setError] = useState("");
+  const [pending, setPending] = useState(null); // imported card awaiting gender
 
   const source = getSource(sourceId);
   const cfg = state.cardSources?.[sourceId] || {};
@@ -62,6 +63,11 @@ export default function CardBrowser({ onClose, onImported }) {
         });
       };
       reader.readAsDataURL(file);
+      if (!character.gender) {
+        // never guess: ask before the card enters the library
+        setPending(character);
+        return;
+      }
       add("characters", character);
       onImported?.(character);
     } catch (e) {
@@ -119,6 +125,18 @@ export default function CardBrowser({ onClose, onImported }) {
           </div>
         )}
       </div>
+      {pending && (
+        <GenderAsk
+          name={pending.name}
+          onPick={(gender) => {
+            const c = { ...pending, gender };
+            add("characters", c);
+            onImported?.(c);
+            setPending(null);
+          }}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </Modal>
   );
 }

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { uid, useStore } from "../store";
-import { CoverImage, DeleteButton, Empty, Field, Modal, PageHead } from "../components/UI";
-import { callChat, textParams } from "../lib/ai";
+import { CoverImage, DeleteButton, Empty, Field, ImagePicker, Modal, PageHead } from "../components/UI";
+import { callChat, textParams, extractReasoning, filterReasoningStream, generateImage, generatedFileEntry } from "../lib/ai";
 import { toSTChatJSONL, toPlainTextChat, importChatFile, downloadBlob } from "../lib/stio";
 import {
   AGENTS,
@@ -15,6 +15,9 @@ import { integrateMemories, recallMemories } from "../lib/memory";
 import { activePreset, assemblePrompt, extractOOC, insertAtDepth, substituteMacros } from "../lib/prompt";
 import { genbus, runDetached } from "../lib/genbus";
 import { mechanicsPromptBlock } from "../lib/mechanics";
+import { agentInstructions, engineEnabledFromPresets, genderPromptLine, generationDirectives } from "../lib/presets";
+import { applyPreGenUpdates, runPreGen, stateBlocks } from "../lib/pipeline";
+import { decideVisuals } from "../lib/visual";
 import MemoryInspector from "../components/MemoryInspector";
 import MechanicsPanel from "../components/MechanicsPanel";
 import Icon from "../components/Icon";
@@ -32,12 +35,13 @@ function generateReplyDetached({ genbus, patch, getState, chatId, speakerName, p
   runningReplies.set(chatId, stream);
   genbus.emit({ type: "chat-stream", chatId, text: "" });
   const taskId = genbus.start(`Reply — ${speakerName}`);
+  const filter = filterReasoningStream((d) => {
+    stream.text += d;
+    genbus.emit({ type: "chat-stream", chatId, text: stream.text });
+  });
   return callChat(profile, payload, {
     ...params,
-    onDelta: (d) => {
-      stream.text += d;
-      genbus.emit({ type: "chat-stream", chatId, text: stream.text });
-    },
+    onDelta: filter.onDelta,
   }).then((out) => {
     const s = getState();
     const chat = s.chats.find((c) => c.id === chatId);
@@ -45,7 +49,7 @@ function generateReplyDetached({ genbus, patch, getState, chatId, speakerName, p
       const msgs = [...(chat.messages || [])];
       const last = msgs[msgs.length - 1];
       const placeholder = last && last.role === "assistant" && last.id === replyId;
-      const reply = { id: replyId, role: "assistant", text: out.content, swipes: [out.content], swipeIdx: 0 };
+      const reply = { id: replyId, role: "assistant", text: out.content, swipes: [out.content], swipeReasoning: [out.reasoning], swipeIdx: 0 };
       if (placeholder) msgs[msgs.length - 1] = reply;
       else msgs.push(reply);
       patch("chats", chatId, { messages: msgs });
@@ -59,6 +63,34 @@ function generateReplyDetached({ genbus, patch, getState, chatId, speakerName, p
     genbus.emit({ type: "chat-stream", chatId, text: null, finished: true });
     throw e;
   });
+}
+
+function ReasoningBlock({ text }) {
+  const [open, setOpen] = useState(false);
+  if (!text?.trim()) return null;
+  return (
+    <div className="reasoning-block">
+      <button className="btn sm ghost" onClick={() => setOpen((v) => !v)}>
+        {open ? "Hide thinking" : "Show thinking"}
+      </button>
+      {open && (
+        <pre style={{
+          margin: "6px 0 0",
+          padding: "8px 10px",
+          borderRadius: 6,
+          background: "rgba(0,0,0,0.25)",
+          color: "var(--text-dim)",
+          whiteSpace: "pre-wrap",
+          fontSize: "0.6875rem",
+          lineHeight: 1.45,
+          maxHeight: 240,
+          overflow: "auto",
+        }}>
+          {text}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 export default function Chats({ activeChatId, setActiveChatId, composerOpen, setComposerOpen }) {
@@ -190,7 +222,13 @@ function ChatRoom({ chatId, back }) {
     if (chat && !chat.memories) patch("chats", chat.id, { memories: [] });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat?.id, !!chat?.agentState, !!chat?.memories]);
-  const agentState = chat?.agentState || initialAgentState();
+  // Global agent presets seed every chat; a per-chat switch wins once touched.
+  const rawAgentState = chat?.agentState || initialAgentState();
+  const agentState = {
+    ...initialAgentState(),
+    ...rawAgentState,
+    enabled: { ...engineEnabledFromPresets(state.presetSystem), ...(rawAgentState.enabled || {}) },
+  };
 
   /** Macro values for {{char}}/{{user}}/… substitution in user input, notes and preset literals. */
   const macroOpts = {
@@ -207,6 +245,8 @@ function ChatRoom({ chatId, back }) {
 
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
+  const [editIdx, setEditIdx] = useState(null);
+  const [editDraft, setEditDraft] = useState("");
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
@@ -228,29 +268,33 @@ function ChatRoom({ chatId, back }) {
    * System prompt for this scene, as role-keyed blocks. Used by send AND
    * reroll so they match, and ordered by the linked preset's sections.
    */
-  const buildSystem = (query, { reroll = false } = {}) => {
-    const lore = (state.lorebooks || [])
-      .flatMap((b) => b.entries || [])
-      .filter((e) =>
-        (e.keys || []).some((k) => k && k.trim() && query.toLowerCase().includes(k.toLowerCase().trim()))
-      )
-      .map((e) => e.content)
-      .join("\n");
+  const buildSystem = (query, { reroll = false, runtime } = {}) => {
+    const live = runtime?.agentState || agentState;
+    // Pre-gen hands us the exact lore it selected; fall back to keyword match.
+    const lore = runtime && "loreText" in runtime
+      ? runtime.loreText
+      : (state.lorebooks || [])
+          .flatMap((b) => b.entries || [])
+          .filter((e) =>
+            (e.keys || []).some((k) => k && k.trim() && query.toLowerCase().includes(k.toLowerCase().trim()))
+          )
+          .map((e) => e.content)
+          .join("\n");
 
     const memoryLines = [
-      agentState.facts?.length && !(chat.memories || []).length
-        ? `Known story facts: ${agentState.facts.slice(-8).map((f) => f.text).join("; ")}`
-        : "",
       (chat.memories || []).length
         ? `Durable memories (canon):\n${recallMemories(chat.memories, query).map((m) => `- ${m.text}`).join("\n")}`
         : "",
-      agentState.memory?.length
-        ? `Long-term memory: ${agentState.memory.slice(-5).map((m) => m.text).join("; ")}`
+      live.memory?.length
+        ? `Long-term memory: ${live.memory.slice(-5).map((m) => m.text).join("; ")}`
         : "",
     ].filter(Boolean).join("\n");
 
+    const speakerGender = genderPromptLine(speaker.gender);
+    const personaGender = genderPromptLine(persona?.gender);
+
     const blocks = {
-      system: `You are ${speaker.name}. ${speaker.personality || ""}`
+      system: `You are ${speaker.name}.${speakerGender ? ` ${speakerGender}` : ""} ${speaker.personality || ""}`
         + (reroll ? "\nGive a different response than before." : ""),
       character: [
         speaker.appearance ? `Appearance: ${speaker.appearance}` : "",
@@ -262,15 +306,15 @@ function ChatRoom({ chatId, back }) {
       scenario: scenario ? `Story setup: ${scenario.title} — ${scenario.summary}` : "",
       context: [
         world ? `World: ${world.name} — ${world.description}` : "",
-        agentState.emotion ? `Your current emotion: ${agentState.emotion}` : "",
+        live.emotion ? `Your current emotion: ${live.emotion}` : "",
         mechanicsPromptBlock(chat.mechanics),
       ].filter((x) => x && String(x).trim()).join("\n"),
       lore: lore ? `Lore:\n${lore}` : "",
       memory: memoryLines,
       instructions: params.style ? `Style: ${params.style}` : "",
-      persona: `You speak with ${persona?.name || "the user"} (${persona?.voice || persona?.description || ""}). Stay in character.`,
+      persona: `You speak with ${persona?.name || "the user"} (${persona?.voice || persona?.description || ""}).${personaGender ? ` ${personaGender}` : ""} Stay in character.`,
     };
-    return assemblePrompt(blocks, activePreset(state, profile), {
+    const assembled = assemblePrompt(blocks, activePreset(state, profile), {
       char: speaker.name,
       user: persona?.name || "the user",
       persona: persona?.description || persona?.voice || "",
@@ -278,40 +322,122 @@ function ChatRoom({ chatId, back }) {
       personality: speaker.personality || "",
       scenario: speaker.scenario || scenario?.summary || "",
     });
+    // Deterministic state is always injected, even when a linked ST preset
+    // carries its own literal sections. Tone/format/boundaries follow it.
+    return [
+      assembled,
+      stateBlocks(live),
+      generationDirectives(state),
+    ].filter(Boolean).join("\n\n");
   };
 
   /* ---- Agents & Trackers ---- */
   const runAgents = async (finalMsgs) => {
-    const as = chat.agentState || initialAgentState();
-    const anyOn = AGENTS.some((a) => as.enabled[a.id]);
-    if (!anyOn || busy) return;
+    // Post-gen runs in the background: read the freshly committed state so a
+    // pre-gen update from this same turn is never overwritten.
+    const fresh = getState().chats.find((c) => c.id === chat.id);
+    const stored = fresh?.agentState || chat.agentState || initialAgentState();
+    const as = {
+      ...agentState,
+      ...stored,
+      enabled: { ...engineEnabledFromPresets(state.presetSystem), ...(stored.enabled || {}) },
+    };
+    const trackersOn = AGENTS.some((a) => as.enabled[a.id]);
+    const agentCfg = state.presetSystem?.agents || {};
+    const illustratorOn = !!agentCfg.illustrator?.enabled;
+    const backgroundOn = !!agentCfg.background?.enabled;
+    const visualOn = illustratorOn || backgroundOn;
+    if (!trackersOn && !visualOn) return;
     const ms = finalMsgs || msgs;
     setAgentBusy(true);
     try {
-      const out = await runTrackerAgents({ profile, params, messages: ms, character, agentState: as, world });
-      const next = applyTrackerOutput(as, out);
-      next.lastRunMessageCount = ms.length;
-      if (out.facts?.length) {
-        const { memories } = integrateMemories(chat.memories || [], out.facts.map((text) => ({ text, type: "fact", importance: 2, source: "worldState" })));
-        patch("chats", chat.id, { memories });
+      if (trackersOn) {
+        const out = await runTrackerAgents({
+          profile, params, messages: ms, character, agentState: as, world,
+          extraInstructions: agentInstructions(state.presetSystem),
+        });
+        const next = applyTrackerOutput(as, out);
+        next.lastRunMessageCount = ms.length;
+        // persist only explicit per-chat overrides; global agent presets stay live
+        next.enabled = stored.enabled || {};
+        if (out.facts?.length) {
+          const { memories } = integrateMemories(chat.memories || [], out.facts.map((text) => ({ text, type: "fact", importance: 2, source: "worldState" })));
+          patch("chats", chat.id, { memories });
+        }
+        if (as.enabled.lorebookKeeper) {
+          const entries = await runLorebookKeeper({ profile, messages: ms, character });
+          if (entries.length) {
+            let book = state.lorebooks.find((b) => b.name === "Story Lore");
+            if (!book) {
+              book = { id: uid(), name: "Story Lore", entries, createdAt: Date.now() };
+              add("lorebooks", book);
+            } else {
+              const merged = [...book.entries, ...entries.filter((e) => !book.entries.some((x) => x.content === e.content))];
+              patch("lorebooks", book.id, { entries: merged });
+            }
+          }
+        }
+        if (as.enabled.cyoa) {
+          next.lastChoices = await runCYOA({ profile, messages: ms, character, world });
+        }
+        patch("chats", chat.id, { agentState: next });
       }
-      if (next.enabled.lorebookKeeper) {
-        const entries = await runLorebookKeeper({ profile, messages: ms, character });
-        if (entries.length) {
-          let book = state.lorebooks.find((b) => b.name === "Story Lore");
-          if (!book) {
-            book = { id: uid(), name: "Story Lore", entries, createdAt: Date.now() };
-            add("lorebooks", book);
+
+      /* ---- Visual agents: decide, render, attach ---- */
+      if (visualOn) {
+        const decision = await decideVisuals({ profile, messages: ms, character, world, chat });
+        const imageProfile = activeProfile("image");
+        const refs = (character?.refs || [])
+          .map((r) => (typeof r === "string" ? r : r?.dataURL))
+          .filter(Boolean);
+        const styled = (txt) => (imageProfile?.style ? `${txt}, ${imageProfile.style}` : txt);
+
+        if (illustratorOn && decision.illustrate && decision.illustrationPrompt) {
+          const latest = getState().chats.find((c) => c.id === chat.id);
+          const latestMsgs = latest?.messages || ms;
+          const lastAssistant = [...latestMsgs].reverse().find((m) => m.role === "assistant");
+          const recentIllustrated = latestMsgs.slice(-6).some((m) => m.image?.dataURL);
+          if (lastAssistant && !lastAssistant.image?.dataURL && !recentIllustrated) {
+            const img = await generateImage(imageProfile, styled(decision.illustrationPrompt), {
+              size: imageProfile?.size || "1024x576",
+              refs,
+            });
+            add("userFiles", generatedFileEntry(
+              "illustrations", "illustration",
+              decision.illustrationPrompt.slice(0, 40), img
+            ));
+            const after = getState().chats.find((c) => c.id === chat.id);
+            patch("chats", chat.id, {
+              messages: (after?.messages || latestMsgs).map((m) =>
+                m.id === lastAssistant.id
+                  ? { ...m, image: { ...img, createdAt: Date.now() } }
+                  : m
+              ),
+            });
+          }
+        }
+
+        if (backgroundOn && decision.backgroundPrompt) {
+          const latest = getState().chats.find((c) => c.id === chat.id);
+          const hasAsset = latest?.background?.dataURL || world?.background?.dataURL;
+          if (!hasAsset && illustratorOn) {
+            const img = await generateImage(imageProfile, styled(decision.backgroundPrompt), {
+              size: imageProfile?.size || "1024x576",
+            });
+            add("userFiles", generatedFileEntry(
+              "backgrounds", "background",
+              decision.backgroundPrompt.slice(0, 40), img
+            ));
+            patch("chats", chat.id, {
+              background: { ...img, createdAt: Date.now() },
+              backgroundPrompt: decision.backgroundPrompt,
+            });
           } else {
-            const merged = [...book.entries, ...entries.filter((e) => !book.entries.some((x) => x.content === e.content))];
-            patch("lorebooks", book.id, { entries: merged });
+            // an existing world/chat asset wins; keep the prompt for the HUD
+            patch("chats", chat.id, { backgroundPrompt: decision.backgroundPrompt });
           }
         }
       }
-      if (next.enabled.cyoa) {
-        next.lastChoices = await runCYOA({ profile, messages: ms, character, world });
-      }
-      patch("chats", chat.id, { agentState: next });
     } catch (e) {
       console.warn("Agent run failed:", e);
     } finally {
@@ -332,6 +458,26 @@ function ChatRoom({ chatId, back }) {
     setMsgs([...msgs, userMsg]);
     setBusy(true);
     try {
+      // --- Phase 1: pre-gen routing (lore, world state, dice) ---
+      let pre = { updates: {}, loreText: "", dice: null };
+      try {
+        pre = await runPreGen({
+          profile, state, chat, character: speaker, persona, world,
+          userText: text, agentState, presetSystem: state.presetSystem,
+        });
+      } catch {
+        // routing must never block a reply
+      }
+      const { background: backgroundAsset, ...agentUpdates } = pre?.updates || {};
+      const preState = applyPreGenUpdates(agentState, { ...pre, updates: agentUpdates });
+      if (Object.keys(agentUpdates).length) {
+        patch("chats", chat.id, { agentState: preState });
+      }
+      // Background agent picked an existing world/chat asset pre-gen.
+      if (backgroundAsset && !chat.background?.dataURL) {
+        patch("chats", chat.id, { background: backgroundAsset });
+      }
+
       const history = msgs.slice(-12).map((m) => ({
         role: m.role,
         content: substituteMacros(stripOOC(m.text), macroOpts),
@@ -343,8 +489,12 @@ function ChatRoom({ chatId, back }) {
         ...(ooc ? [{ role: "system", content: `(OOC instruction — follow it, but do not repeat it verbatim: ${ooc})` }] : []),
         { role: "user", content: substituteMacros(clean || ooc, macroOpts) },
       ];
+      // --- Phase 2: lean generation prompt ---
+      const systemPrompt = buildSystem(text, {
+        runtime: { agentState: preState, loreText: pre.loreText },
+      });
       const payload = insertAtDepth(
-        [{ role: "system", content: buildSystem(text) }, ...conversation],
+        [{ role: "system", content: systemPrompt }, ...conversation],
         chat.authorNote?.text?.trim() ? substituteMacros(chat.authorNote.text, macroOpts) : "",
         chat.authorNote?.depth ?? 4,
       );
@@ -402,7 +552,9 @@ function ChatRoom({ chatId, back }) {
       setStreamText(null);
       setStreamIdx(-1);
       const next = [...msgs];
-      next[i] = { ...m, text: out.content, swipes: [...(m.swipes || [m.text]), out.content], swipeIdx: (m.swipes || [m.text]).length };
+      const prevSwipes = m.swipes || [m.text];
+      const prevReasoning = m.swipeReasoning || new Array(prevSwipes.length).fill("");
+      next[i] = { ...m, text: out.content, swipes: [...prevSwipes, out.content], swipeReasoning: [...prevReasoning, out.reasoning], swipeIdx: prevSwipes.length };
       setMsgs(next);
       runAgents(next);
     } catch {
@@ -420,20 +572,112 @@ function ChatRoom({ chatId, back }) {
     const idx = Math.min(m.swipes.length - 1, Math.max(0, m.swipeIdx + dir));
     const next = [...msgs];
     next[i] = { ...m, swipeIdx: idx, text: m.swipes[idx] };
+    if (m.swipeReasoning?.[idx]) next[i].reasoning = m.swipeReasoning[idx];
+    else delete next[i].reasoning;
     setMsgs(next);
   };
 
-  const editMsg = (i) => {
-    const t = prompt("Edit message:", msgs[i].text);
-    if (t === null) return;
-    const next = [...msgs];
-    next[i] = { ...msgs[i], text: t };
-    setMsgs(next);
+  const generateNextReply = async (baseMsgs) => {
+    setBusy(true);
+    try {
+      const lastUser = baseMsgs.slice().reverse().find((m) => m.role === "user");
+      let pre = { updates: {}, loreText: "", dice: null };
+      try {
+        pre = await runPreGen({
+          profile, state, chat, character: speaker, persona, world,
+          userText: lastUser?.text || "", agentState, presetSystem: state.presetSystem,
+        });
+      } catch {
+        // routing must never block a reply
+      }
+      const { background: backgroundAsset, ...agentUpdates } = pre?.updates || {};
+      const preState = applyPreGenUpdates(agentState, { ...pre, updates: agentUpdates });
+      if (Object.keys(agentUpdates).length) {
+        patch("chats", chat.id, { agentState: preState });
+      }
+      if (backgroundAsset && !chat.background?.dataURL) {
+        patch("chats", chat.id, { background: backgroundAsset });
+      }
+      const history = baseMsgs.slice(-12).map((m) => ({
+        role: m.role,
+        content: substituteMacros(stripOOC(m.text), macroOpts),
+      }));
+      const payload = insertAtDepth(
+        [{ role: "system", content: buildSystem(lastUser?.text || "", { runtime: { agentState: preState, loreText: pre.loreText } }) }, ...history],
+        chat.authorNote?.text?.trim() ? substituteMacros(chat.authorNote.text, macroOpts) : "",
+        chat.authorNote?.depth ?? 4,
+      );
+      const finalPayload = withJailbreak(payload);
+      const reply = { id: uid(), role: "assistant", text: "", swipes: [""], swipeIdx: 0 };
+      setMsgs([...baseMsgs, reply]);
+      generateReplyDetached({
+        genbus, patch, getState, chatId: chat.id, speakerName: speaker.name,
+        payload: finalPayload, profile, params, replyId: reply.id,
+      }).then(() => {
+        if (aliveRef.current) {
+          const fresh = getState().chats.find((c) => c.id === chat.id);
+          if (fresh) runAgents(fresh.messages);
+        }
+      }).catch((e) => {
+        if (aliveRef.current) {
+          setMsgs([...(getState().chats.find((c) => c.id === chat.id)?.messages || []), {
+            id: uid(), role: "assistant", text: "Error: " + (e.message || e),
+          }]);
+        }
+      }).finally(() => {
+        if (aliveRef.current) setBusy(false);
+      });
+    } catch (e) {
+      setMsgs([...baseMsgs, { id: uid(), role: "assistant", text: "Error: " + (e.message || e) }]);
+      setBusy(false);
+    }
   };
+
+  const openEdit = (i) => {
+    setEditIdx(i);
+    setEditDraft(msgs[i]?.text || "");
+  };
+
+  const saveEdit = (branch = false) => {
+    if (editIdx === null) return;
+    const next = [...msgs];
+    next[editIdx] = { ...msgs[editIdx], text: editDraft };
+
+    if (branch) {
+      const truncated = next.slice(0, editIdx + 1);
+      setMsgs(truncated);
+      if (truncated[editIdx]?.role === "user") {
+        generateNextReply(truncated);
+      }
+    } else {
+      setMsgs(next);
+    }
+    setEditIdx(null);
+    setEditDraft("");
+  };
+
+  const branchFrom = (i) => {
+    if (!confirm("Branch from this message? Everything after it will be discarded.")) return;
+    const truncated = msgs.slice(0, i + 1);
+    setMsgs(truncated);
+    if (truncated[i]?.role === "user") {
+      generateNextReply(truncated);
+    }
+  };
+
+  const sceneBg = chat.background?.dataURL || world?.background?.dataURL;
 
   return (
-    <div className="chat-wrap" style={{ height: "100%" }}>
-      <div className="chat-pane">
+    <div className="chat-wrap" style={{ height: "100%", position: "relative" }}>
+      {sceneBg && (
+        <div style={{
+          position: "absolute", inset: 0,
+          backgroundImage: `url("${String(sceneBg).replace(/"/g, "%22")}")`,
+          backgroundSize: "cover", backgroundPosition: "center",
+          opacity: 0.16, pointerEvents: "none",
+        }} />
+      )}
+      <div className="chat-pane" style={{ position: "relative", background: sceneBg ? "transparent" : undefined }}>
         <div className="chat-head">
           <button className="btn ghost back" onClick={back} aria-label="Back" title="Back">‹</button>
           <Avatar name={speaker.name} src={speaker.portrait?.dataURL} size={52} />
@@ -459,9 +703,23 @@ function ChatRoom({ chatId, back }) {
           {msgs.map((m, i) => (
             <div key={m.id || i} className={`msg ${m.role === "user" ? "user" : ""}`}>
               <Avatar name={m.role === "user" ? (persona?.name || "You") : speaker.name} src={m.role === "user" ? persona?.image?.dataURL : speaker.portrait?.dataURL} size={32} />
-              <div>
-                <div className="bubble">{streamIdx === i && streamText !== null ? streamText : m.text}</div>
-                <div className="meta">
+                <div>
+                  <div className="bubble">{streamIdx === i && streamText !== null ? streamText : m.text}</div>
+                  {m.image?.dataURL && (
+                    <img
+                      src={m.image.dataURL}
+                      alt={m.image.prompt || "Illustration"}
+                      title={m.image.prompt || ""}
+                      style={{
+                        display: "block", marginTop: 8, width: "100%", maxWidth: 520,
+                        borderRadius: 8, border: "1px solid var(--border)",
+                      }}
+                    />
+                  )}
+                  {m.role === "assistant" && !(streamIdx === i && streamText !== null) && (
+                    <ReasoningBlock text={m.swipeReasoning?.[m.swipeIdx] || m.reasoning || extractReasoning(m.text).reasoning || ""} />
+                  )}
+                  <div className="meta">
                   {m.role === "user" ? persona?.name || "You" : speaker.name}
                   {m.role === "assistant" && agentState.emotion && agentState.enabled.expression && (
                     <span className="tag accent" style={{ fontSize: 10, padding: "1px 8px" }}>{agentState.emotion}</span>
@@ -475,7 +733,8 @@ function ChatRoom({ chatId, back }) {
                   )}
                   <span className="actions">
                     {m.role === "assistant" && <button onClick={() => reroll(i)}>↻ Reroll</button>}
-                    <button onClick={() => editMsg(i)}>Edit</button>
+                    <button onClick={() => openEdit(i)}>Edit</button>
+                    <button onClick={() => branchFrom(i)}>Branch</button>
                     <button onClick={() => setMsgs(msgs.filter((_, j) => j !== i))}>Delete</button>
                   </span>
                 </div>
@@ -577,6 +836,33 @@ function ChatRoom({ chatId, back }) {
           </div>
 
           <div className="hud-section">
+            <h3>Scene Background</h3>
+            <div className="faint" style={{ lineHeight: 1.4, marginBottom: 8 }}>
+              {chat.backgroundPrompt || "The Background agent keeps this in sync; the Illustrator can render one if none exists."}
+            </div>
+            <ImagePicker
+              category="backgrounds"
+              kind="cover"
+              value={chat.background?.dataURL}
+              prompt={chat.backgroundPrompt || (world ? `${world.name} — ${world.description}` : `Scene with ${speaker.name}`)}
+              onChange={(img) => patch("chats", chat.id, { background: img })}
+              label={chat.background?.dataURL ? "Change background" : "Add background"}
+            />
+          </div>
+
+          {agentState.world && (agentState.world.location || agentState.world.time || agentState.world.weather) && (
+            <div className="hud-section">
+              <h3>World State</h3>
+              <div style={{ fontSize: 12 }}>
+                {[agentState.world.location, agentState.world.time, agentState.world.weather].filter(Boolean).join(" · ")}
+              </div>
+              <div className="faint mt" style={{ lineHeight: 1.4 }}>
+                Parsed by the pre-gen router and saved as deterministic state.
+              </div>
+            </div>
+          )}
+
+          <div className="hud-section">
             <h3>Jailbreak</h3>
             <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12, textTransform: "none", letterSpacing: 0 }}>
               <input
@@ -669,6 +955,30 @@ function ChatRoom({ chatId, back }) {
             </div>
           )}
         </div>
+      )}
+
+      {editIdx !== null && (
+        <Modal
+          title={`Edit ${msgs[editIdx]?.role === "user" ? "your" : speaker.name + "'s"} message`}
+          onClose={() => setEditIdx(null)}
+          wide
+        >
+          <textarea
+            rows={8}
+            value={editDraft}
+            onChange={(e) => setEditDraft(e.target.value)}
+            style={{ width: "100%", minHeight: 140 }}
+          />
+          <div className="faint mt">
+            <b>Save</b> updates the message in place. <b>Save & Branch</b> updates it, removes everything after it, and continues from there.
+          </div>
+          <div className="row mt">
+            <div className="spacer" />
+            <button className="btn" onClick={() => setEditIdx(null)}>Cancel</button>
+            <button className="btn primary" onClick={() => saveEdit(false)}>Save</button>
+            <button className="btn primary" onClick={() => saveEdit(true)}>Save & Branch</button>
+          </div>
+        </Modal>
       )}
     </div>
   );

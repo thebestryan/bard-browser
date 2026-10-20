@@ -3,6 +3,7 @@ import { idbGet, idbSet, idbDel } from "./lib/idb";
 import { encryptText, decryptText, isEncrypted, cryptoAvailable } from "./lib/secure";
 export { uid } from "./lib/id";
 import { removeCascade as cascade, deletionImpact } from "./lib/cascade";
+import { defaultPresetSystem, normalizePresetSystem } from "./lib/presets";
 
 const STATE_KEY = "state.v1";
 const FILES_KEY = "files.v1"; // uploads/generated images live apart from hot state
@@ -27,6 +28,7 @@ const seedState = {
   userFiles: [], // organized by category, original filenames preserved (uploads are NEVER renamed)
   jailbreak: { enabled: false, text: "" },
   ui: { textScale: 1 },
+  presetSystem: defaultPresetSystem(),
 };
 
 /** Migrate older state shapes: providers[] → text profiles, etc. */
@@ -103,6 +105,8 @@ async function loadState() {
     }
     if (!raw) return seedState;
     const merged = { ...seedState, ...raw, userFiles: files ?? raw.userFiles ?? [] };
+    // preset catalog grows over time — fill in anything an older save lacks
+    merged.presetSystem = normalizePresetSystem(merged.presetSystem);
     return (await decryptState(migrate(merged))).state;
   } catch {
     return seedState;

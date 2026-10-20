@@ -30,6 +30,64 @@ function isMock(provider) {
 }
 
 /**
+ * Strip chain-of-thought / reasoning blocks from model output and return them
+ * separately. Supports common tags (<thinking>, <reasoning>, <think>) and bare
+ * markers used by reasoning models.
+ */
+const REASONING_TAGS = [
+  /<(thinking|reasoning|think)[^>]*>([\s\S]*?)<\/\1>/gi,
+];
+
+function stripReasoningTags(text, pattern) {
+  const reasoning = [];
+  const clean = text.replace(pattern, (m, tag, inner) => {
+    reasoning.push(inner.trim());
+    return "";
+  });
+  return { clean, reasoning };
+}
+
+export function extractReasoning(text) {
+  let clean = String(text || "");
+  const parts = [];
+  for (const pattern of REASONING_TAGS) {
+    const res = stripReasoningTags(clean, pattern);
+    clean = res.clean;
+    parts.push(...res.reasoning.filter(Boolean));
+  }
+  // Collapse multiple blank lines and trim
+  clean = clean.replace(/\n{3,}/g, "\n\n").trim();
+  const reasoning = parts.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+  return { clean, reasoning };
+}
+
+/**
+ * Wrap a streaming onDelta callback so that reasoning/thinking tags don't
+ * flash on screen. Completed tags are stripped from the displayed stream;
+ * content after the closing tag only appears once the tag pair is complete.
+ */
+export function filterReasoningStream(onDelta) {
+  let raw = "";
+  let clean = "";
+  let reasoning = "";
+  let lastEmit = "";
+  return {
+    onDelta: (delta) => {
+      raw += delta;
+      const res = extractReasoning(raw);
+      reasoning = res.reasoning;
+      if (res.clean.length > clean.length) {
+        clean = res.clean;
+        const textDelta = clean.slice(lastEmit.length);
+        lastEmit = clean;
+        if (textDelta) onDelta(textDelta);
+      }
+    },
+    getReasoning: () => reasoning,
+  };
+}
+
+/**
  * Effective generation parameters for a text profile.
  * A linked preset supplies defaults; explicit profile values win over it
  * (SillyTavern-style: profile = connection + sampler settings + preset).
@@ -56,10 +114,12 @@ export async function callChat(provider, messages, { temperature = 0.8, maxToken
         onDelta(part);
         await delay(12 + Math.random() * 30);
       }
-      return { content: acc, raw: null };
+      const { clean, reasoning } = extractReasoning(acc);
+      return { content: clean, reasoning, raw: null };
     }
     await delay(600 + Math.random() * 900);
-    return { content: text, raw: null };
+    const { clean, reasoning } = extractReasoning(text);
+    return { content: clean, reasoning, raw: null };
   }
   const headers = {
     "Content-Type": "application/json",
@@ -93,6 +153,7 @@ export async function callChat(provider, messages, { temperature = 0.8, maxToken
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let acc = "";
+    let reasonAcc = "";
     let buf = "";
     try {
       for (;;) {
@@ -107,10 +168,13 @@ export async function callChat(provider, messages, { temperature = 0.8, maxToken
           const payload = ln.slice(5).trim();
           if (payload === "[DONE]") continue;
           try {
-            const delta = JSON.parse(payload).choices?.[0]?.delta?.content;
-            if (delta) {
-              acc += delta;
-              onDelta(delta);
+            const deltaObj = JSON.parse(payload).choices?.[0]?.delta;
+            const contentDelta = deltaObj?.content;
+            const reasoningDelta = deltaObj?.reasoning_content || deltaObj?.thinking;
+            if (typeof reasoningDelta === "string") reasonAcc += reasoningDelta;
+            if (contentDelta) {
+              acc += contentDelta;
+              onDelta(contentDelta);
             }
           } catch { /* partial frame — keep buffering */ }
         }
@@ -119,12 +183,16 @@ export async function callChat(provider, messages, { temperature = 0.8, maxToken
       t.done();
       reader.cancel().catch(() => {});
     }
-    return { content: acc, raw: null };
+    const { clean } = extractReasoning(acc);
+    return { content: clean, reasoning: reasonAcc.trim(), raw: null };
   }
 
   try {
     const data = await res.json();
-    return { content: data.choices?.[0]?.message?.content ?? "", raw: data };
+    const rawContent = data.choices?.[0]?.message?.content ?? "";
+    const nativeReasoning = data.choices?.[0]?.message?.reasoning_content || data.choices?.[0]?.message?.thinking || "";
+    const { clean: contentClean, reasoning: tagReasoning } = extractReasoning(rawContent);
+    return { content: contentClean, reasoning: nativeReasoning.trim() || tagReasoning || "", raw: data };
   } finally {
     t.done();
   }
@@ -157,14 +225,14 @@ export function stripEmoji(v) {
 }
 
 /** Ask the AI for a JSON object. Falls back to extracting JSON from text. */
-export async function callJSON(provider, systemPrompt, userPrompt, { signal } = {}) {
+export async function callJSON(provider, systemPrompt, userPrompt, { signal, temperature = 0.9, maxTokens } = {}) {
   const out = await callChat(
     provider,
     [
       { role: "system", content: systemPrompt + " Respond with a single JSON object only. Do not use emoji anywhere." },
       { role: "user", content: userPrompt },
     ],
-    { json: true, temperature: 0.9, signal }
+    { json: true, temperature, maxTokens, signal }
   );
   let text = out.content.trim();
   const m = text.match(/\{[\s\S]*\}/);
@@ -201,7 +269,7 @@ function mockRespond(last) {
 export async function generateCharacter(provider, idea, { signal } = {}) {
   if (isMock(provider)) {
     const c = mockChar(idea);
-    return { ...c, id: uid(), examples: c.examples || [], createdAt: Date.now() };
+    return { ...c, id: uid(), gender: "", examples: c.examples || [], createdAt: Date.now() };
   }
   const data = await callJSON(
     provider,
@@ -212,6 +280,7 @@ export async function generateCharacter(provider, idea, { signal } = {}) {
   return {
     id: uid(),
     name: data.name || "Unnamed",
+    gender: "",
     tags: data.tags || [],
     appearance: data.appearance || "",
     personality: data.personality || "",
@@ -228,6 +297,7 @@ export async function generatePersona(provider, idea, { signal } = {}) {
     return {
       ...p,
       description: idea ? `${idea} — ${p.description}` : p.description,
+      gender: "",
       id: uid(), createdAt: Date.now(),
     };
   }
@@ -240,6 +310,7 @@ export async function generatePersona(provider, idea, { signal } = {}) {
   return {
     id: uid(),
     name: data.name || "You",
+    gender: "",
     description: data.description || "",
     traits: data.traits || [],
     voice: data.voice || "",

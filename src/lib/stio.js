@@ -13,12 +13,26 @@ import { uid } from "./id.js";
 
 /* ================= character card (V2) ================= */
 
+/**
+ * Cards occasionally carry an explicit gender field. Only an explicit value
+ * counts — names and descriptions are never used to infer one.
+ */
+const GENDER_MAP = {
+  male: "he", m: "he", man: "he", he: "he", "he/him": "he",
+  female: "she", f: "she", woman: "she", she: "she", "she/her": "she",
+  "non-binary": "they", nonbinary: "they", enby: "they", they: "they", "they/them": "they",
+};
+function normalizeGender(v) {
+  return GENDER_MAP[String(v || "").toLowerCase().trim()] || "";
+}
+
 export function toSTCard(c) {
   return {
     spec: "chara_card_v2",
     spec_version: "2.0",
     data: {
       name: c.name || "",
+      gender: c.gender || "",
       description: [c.appearance, c.personality].filter(Boolean).join("\n\n"),
       personality: c.personality || "",
       scenario: c.scenario || "",
@@ -48,6 +62,7 @@ export function fromSTCard(obj) {
   return {
     id: uid(),
     name,
+    gender: normalizeGender(d?.gender || d?.sex),
     tags: d?.tags || [],
     appearance,
     personality,

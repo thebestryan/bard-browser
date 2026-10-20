@@ -10,8 +10,36 @@ import {
   uidLocal,
 } from "../lib/prompt";
 import Icon from "../components/Icon";
+import {
+  AGENT_PRESETS, NARRATIVE_STYLES, DIALOGUE_FORMATS, EXPLICIT_LEVELS, VIOLENCE_LEVELS,
+  normalizePresetSystem, generationDirectives,
+} from "../lib/presets";
 
 const num = (v, fallback) => (Number.isFinite(parseFloat(v)) ? parseFloat(v) : fallback);
+
+/** Which half of the pipeline each agent belongs to. */
+const PHASE_LABEL = { pre: "Pre-gen", post: "Post-gen", both: "Pre + post" };
+
+function PipelineStrip() {
+  const steps = [
+    ["1", "Pre-gen", "Routing agents select lore, parse world state and roll dice. Results are saved as JSON before the model runs."],
+    ["2", "Generation", "The main model gets a lean prompt: persona, tone preset and the structured state blocks."],
+    ["3", "Post-gen", "Extraction agents update sheets, inventory and widgets in the background — no waiting."],
+  ];
+  return (
+    <div className="grid cols-3 mb">
+      {steps.map(([n, title, body]) => (
+        <div key={n} className="card" style={{ padding: 12 }}>
+          <div className="row" style={{ gap: 8 }}>
+            <span className="badge accent" style={{ minWidth: 22, textAlign: "center" }}>{n}</span>
+            <b>{title}</b>
+          </div>
+          <div className="faint mt" style={{ lineHeight: 1.45 }}>{body}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function Lorebooks() {
   const { state, add, activeProfile, removeCascade } = useStore();
@@ -199,12 +227,310 @@ function SectionRow({
 }
 
 /**
+ * The preset control panel.
+ *
+ * Agent presets are handed to background agents (pre- and post-generation);
+ * generation presets are injected into the main system prompt so tone,
+ * formatting and boundaries shape sampling from the first token.
+ */
+export function Presets() {
+  const { state, update } = useStore();
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [showDirectives, setShowDirectives] = useState(true);
+  const ps = normalizePresetSystem(state.presetSystem);
+
+  const setPS = (fn) =>
+    update((s) => ({ presetSystem: fn(normalizePresetSystem(s.presetSystem)) }));
+  const setAgent = (id, p) =>
+    setPS((x) => ({ ...x, agents: { ...x.agents, [id]: { ...x.agents[id], ...p } } }));
+  const setGen = (key, p) =>
+    setPS((x) => ({ ...x, generation: { ...x.generation, [key]: { ...x.generation[key], ...p } } }));
+
+  const enabledAgents = AGENT_PRESETS.filter((a) => ps.agents[a.id]?.enabled).length;
+  const directives = generationDirectives({ presetSystem: ps });
+
+  return (
+    <div>
+      <PageHead
+        title="Presets"
+        sub="Two layers: agents that maintain state behind the scenes, and generation presets that shape the main prompt. Everything saves live."
+      />
+      <PipelineStrip />
+
+      <h3>Agent presets — handed off to agents</h3>
+      <div className="faint mb">
+        {enabledAgents} of {AGENT_PRESETS.length} switched on. Agents run on your active text profile;
+        pre-gen agents finish before the reply starts, post-gen agents update state after it lands.
+      </div>
+      {AGENT_PRESETS.map((a) => {
+        const cfg = ps.agents[a.id] || { enabled: false, instructions: "" };
+        return (
+          <div key={a.id} className="card mb" style={{ padding: 12, opacity: cfg.enabled ? 1 : 0.72 }}>
+            <div className="row" style={{ alignItems: "flex-start" }}>
+              <Icon
+                name={a.icon}
+                size={17}
+                style={{ color: cfg.enabled ? "var(--accent)" : "var(--text-faint)", marginTop: 2 }}
+              />
+              <div className="grow" style={{ minWidth: 0 }}>
+                <div className="row" style={{ gap: 8 }}>
+                  <b>{a.name}</b>
+                  <span className="badge" style={{ fontSize: 9 }}>{PHASE_LABEL[a.phase] || "Post-gen"}</span>
+                </div>
+                <div className="faint" style={{ lineHeight: 1.45 }}>{a.desc}</div>
+              </div>
+              <label
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, margin: 0,
+                  textTransform: "none", letterSpacing: 0, fontSize: 12, cursor: "pointer",
+                  color: cfg.enabled ? "var(--accent)" : "var(--text-faint)",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  style={{ width: "auto" }}
+                  checked={cfg.enabled}
+                  onChange={(e) => setAgent(a.id, { enabled: e.target.checked })}
+                />
+                {cfg.enabled ? "On" : "Off"}
+              </label>
+            </div>
+            {a.custom && cfg.enabled && (
+              <Field label="Custom agent instructions">
+                <textarea
+                  rows={3}
+                  value={cfg.instructions || ""}
+                  placeholder="e.g. Track the political factions and note whenever a lie is told."
+                  onChange={(e) => setAgent(a.id, { instructions: e.target.value })}
+                />
+              </Field>
+            )}
+          </div>
+        );
+      })}
+
+      <h3 className="mt">Generation presets — injected into the main prompt</h3>
+      <div className="faint mb">
+        These are not post-processing. They sit in the base system prompt, so the model's tone,
+        format and boundaries are shaped while it is assembling tokens.
+      </div>
+
+      <div className="card mb">
+        <div className="row">
+          <div className="grow">
+            <b>Narrative Style &amp; Author Directives</b>
+            <div className="faint">Grimdark, pulp, second-person, cinematic detail — the voice of the prose.</div>
+          </div>
+          <label style={toggleStyle}>
+            <input
+              type="checkbox"
+              style={{ width: "auto" }}
+              checked={ps.generation.narrative.enabled}
+              onChange={(e) => setGen("narrative", { enabled: e.target.checked })}
+            />
+            {ps.generation.narrative.enabled ? "On" : "Off"}
+          </label>
+        </div>
+        {ps.generation.narrative.enabled && (
+          <div className="mt">
+            <Field label="Style">
+              <select
+                value={ps.generation.narrative.preset}
+                onChange={(e) => setGen("narrative", { preset: e.target.value })}
+              >
+                {NARRATIVE_STYLES.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </Field>
+            {ps.generation.narrative.preset === "custom" && (
+              <Field label="Custom style directive">
+                <textarea
+                  rows={3}
+                  value={ps.generation.narrative.custom || ""}
+                  placeholder="Describe the voice you want in one or two sentences."
+                  onChange={(e) => setGen("narrative", { custom: e.target.value })}
+                />
+              </Field>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="card mb">
+        <div className="row">
+          <div className="grow">
+            <b>Dialogue Formatting Constraints</b>
+            <div className="faint">Quotes vs asterisks, script layout, and whether the player's thoughts appear.</div>
+          </div>
+          <label style={toggleStyle}>
+            <input
+              type="checkbox"
+              style={{ width: "auto" }}
+              checked={ps.generation.dialogue.enabled}
+              onChange={(e) => setGen("dialogue", { enabled: e.target.checked })}
+            />
+            {ps.generation.dialogue.enabled ? "On" : "Off"}
+          </label>
+        </div>
+        {ps.generation.dialogue.enabled && (
+          <div className="mt">
+            <Field label="Format">
+              <select
+                value={ps.generation.dialogue.preset}
+                onChange={(e) => setGen("dialogue", { preset: e.target.value })}
+              >
+                {DIALOGUE_FORMATS.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </Field>
+            {ps.generation.dialogue.preset === "custom" && (
+              <Field label="Custom formatting rules">
+                <textarea
+                  rows={3}
+                  value={ps.generation.dialogue.custom || ""}
+                  placeholder="e.g. Dialogue in quotes; actions in italics; no inner thoughts for my character."
+                  onChange={(e) => setGen("dialogue", { custom: e.target.value })}
+                />
+              </Field>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="card mb">
+        <div className="row">
+          <div className="grow">
+            <b>Safety / Content Boundaries</b>
+            <div className="faint">Chosen limits are stated in the base prompt so the model stays inside them by construction.</div>
+          </div>
+          <label style={toggleStyle}>
+            <input
+              type="checkbox"
+              style={{ width: "auto" }}
+              checked={ps.generation.safety.enabled}
+              onChange={(e) => setGen("safety", { enabled: e.target.checked })}
+            />
+            {ps.generation.safety.enabled ? "On" : "Off"}
+          </label>
+        </div>
+        {ps.generation.safety.enabled && (
+          <div className="grid cols-2 mt">
+            <div>
+              <Field label="Sexual / explicit content">
+                <select
+                  value={ps.generation.safety.explicit}
+                  onChange={(e) => setGen("safety", { explicit: Number(e.target.value) })}
+                >
+                  {EXPLICIT_LEVELS.map((l) => (
+                    <option key={l.value} value={l.value}>{l.value} — {l.name}</option>
+                  ))}
+                </select>
+              </Field>
+              <div className="faint">{EXPLICIT_LEVELS.find((l) => l.value === ps.generation.safety.explicit)?.text}</div>
+            </div>
+            <div>
+              <Field label="Violence">
+                <select
+                  value={ps.generation.safety.violence}
+                  onChange={(e) => setGen("safety", { violence: Number(e.target.value) })}
+                >
+                  {VIOLENCE_LEVELS.map((l) => (
+                    <option key={l.value} value={l.value}>{l.value} — {l.name}</option>
+                  ))}
+                </select>
+              </Field>
+              <div className="faint">{VIOLENCE_LEVELS.find((l) => l.value === ps.generation.safety.violence)?.text}</div>
+            </div>
+            <div className="faint" style={{ gridColumn: "1 / -1", lineHeight: 1.45 }}>
+              Hard limits always apply: no sexual content involving minors, no sexual content involving real
+              people, and no instructions for real-world harm.
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="card mb">
+        <div className="row">
+          <div className="grow">
+            <b>Custom Instructions</b>
+            <div className="faint">Your own standing direction — house rules, a jailbreak, or a tone note.</div>
+          </div>
+          <label style={toggleStyle}>
+            <input
+              type="checkbox"
+              style={{ width: "auto" }}
+              checked={ps.generation.custom.enabled}
+              onChange={(e) => setGen("custom", { enabled: e.target.checked })}
+            />
+            {ps.generation.custom.enabled ? "On" : "Off"}
+          </label>
+        </div>
+        {ps.generation.custom.enabled && (
+          <Field label="Instructions">
+            <textarea
+              rows={4}
+              value={ps.generation.custom.text || ""}
+              placeholder="e.g. Keep replies under three paragraphs. Never speak for my character."
+              onChange={(e) => setGen("custom", { text: e.target.value })}
+            />
+          </Field>
+        )}
+      </div>
+
+      <div className="card mb">
+        <div className="row">
+          <label style={{ margin: 0 }}>Live directive block — exactly what is appended to the system prompt</label>
+          <div className="spacer" />
+          <button className="btn sm ghost" aria-expanded={showDirectives} onClick={() => setShowDirectives((v) => !v)}>
+            <Icon
+              name="chevron"
+              size={12}
+              style={{ transform: showDirectives ? "rotate(90deg)" : "none", transition: "transform 120ms ease" }}
+            />
+            {showDirectives ? "Hide" : "Show"}
+          </button>
+        </div>
+        {showDirectives && (
+          <pre style={{
+            margin: "8px 0 0", padding: 10, borderRadius: 8, background: "rgba(0,0,0,0.25)",
+            whiteSpace: "pre-wrap", fontSize: "0.6875rem", lineHeight: 1.5,
+            maxHeight: 220, overflow: "auto", color: "var(--text-dim)",
+          }}>
+            {directives || "(nothing enabled — the base prompt is unchanged)"}
+          </pre>
+        )}
+      </div>
+
+      <details
+        className="card"
+        open={advancedOpen}
+        onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
+      >
+        <summary style={{ cursor: "pointer", padding: "12px 14px", fontWeight: 650 }}>
+          Advanced — linked SillyTavern-format prompt preset
+        </summary>
+        <div style={{ padding: "0 14px 14px" }}>
+          <AdvancedPresets embedded />
+        </div>
+      </details>
+    </div>
+  );
+}
+
+const toggleStyle = {
+  display: "inline-flex", alignItems: "center", gap: 6, margin: 0,
+  textTransform: "none", letterSpacing: 0, fontSize: 12, cursor: "pointer",
+};
+
+/**
  * SillyTavern-style preset manager: a dropdown of presets at the top; the
  * selected preset's options populate below it, each toggleable, in the order
  * the preset (or the imported JSON) lists them. Edits save live — no restart,
  * no save button. SillyTavern JSON import/export included.
  */
-export function Presets() {
+function AdvancedPresets({ embedded = false }) {
   const { state, add, patch, activeProfile, patchProfile, removeCascade, deletionImpact } = useStore();
   const fileRef = React.useRef(null);
   const [selectedId, setSelectedId] = useState(null);
@@ -285,7 +611,7 @@ export function Presets() {
   if (presets.length === 0) {
     return (
       <div>
-        <PageHead title="Presets" sub="Prompt section ordering + generation parameters. Import a SillyTavern preset, or start blank — everything is editable in place.">
+        <PageHead title={embedded ? "Advanced prompt preset" : "Presets"} sub="Prompt section ordering + generation parameters. Import a SillyTavern preset, or start blank — everything is editable in place.">
           <input ref={fileRef} type="file" multiple accept=".json" style={{ display: "none" }} onChange={doImport} />
           <button className="btn" onClick={() => fileRef.current?.click()}>
             <Icon name="upload" size={13} /> Import ST Preset
@@ -381,7 +707,7 @@ export function Presets() {
 
   return (
     <div>
-      <PageHead title="Presets" sub={`Pick a preset, switch its sections on or off, done — edits save as you type. A preset takes effect once a text connection profile links to it (active: "${textProfile?.name || "none"}").`}>
+      <PageHead title={embedded ? "Advanced prompt preset" : "Presets"} sub={`Pick a preset, switch its sections on or off, done — edits save as you type. A preset takes effect once a text connection profile links to it (active: "${textProfile?.name || "none"}").`}>
         <input ref={fileRef} type="file" multiple accept=".json" style={{ display: "none" }} onChange={doImport} />
         <button className="btn" onClick={() => fileRef.current?.click()}>
           <Icon name="upload" size={13} /> Import
